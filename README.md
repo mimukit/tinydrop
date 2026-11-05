@@ -48,7 +48,7 @@ The token goes in your login Keychain under the service `tinydrop`, through `/us
 | Command | What it does |
 |---------|--------------|
 | Search Bookmarks | Search the local store. An empty search lists the bookmarks you open most, then the newest. A dropdown in the search bar filters by collection. Account and the sync actions live here. |
-| Add Bookmark | A form with the URL from the clipboard, title, note, collection (the last one you used), tags, new tags and favorite. Raindrop fills in the title, excerpt and cover it finds on the page. |
+| Add Bookmark | A form with the URL from the clipboard, title, note, collection (the last one you used, or Bookmarks), tags and favorite. Raindrop fills in the title, excerpt and cover it finds on the page. |
 | Sync | Fetch the changes since the last sync and show the counts in a HUD, such as "Synced 37 changes, 2 removed". |
 
 Two preferences control refresh on open. "Refresh on open" (off by default) runs a sync when Search Bookmarks opens and the last sync is older than "Stale after": 1 hour, 6 hours or 1 day (default 1 day).
@@ -69,7 +69,13 @@ Terms combine with AND, and so do `in:` and the collection dropdown. An unknown 
 
 Type `#` to show up to ten stored tags. Type more letters to narrow the suggestions by prefix. Select a tag with the arrow keys and press Enter to insert it. The search keeps earlier filters and quotes tag names that contain spaces. Suggestions use the local store and work offline.
 
-## Add Bookmark page details
+## Add Bookmark fields
+
+The form selects the last saved collection if it still exists. Otherwise, it selects Bookmarks. If Bookmarks does not exist, it selects Unsorted.
+
+Use the Tags field for existing and new names. Separate names with commas. Matching tags appear below the field and in Actions. Select an Insert action to complete a name. Names without an existing match create tags when you save.
+
+### Page details
 
 Enter a URL in Add Bookmark. Press `⌘R` or select Fetch Page Details from Actions. The form uses Raindrop's read-only URL parser to fill empty Title and Description fields. Existing text stays unchanged. You can edit both fields before saving. Description saves as the bookmark excerpt; Note stays separate. Fetching requires a network connection and a valid token. Fetching does not save a bookmark.
 

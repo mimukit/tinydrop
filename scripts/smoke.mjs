@@ -689,7 +689,7 @@ async function flowAddBookmarkForm() {
     assert.equal(field("Form.Dropdown", "collection")?.props.value, "12", "the last used collection");
     await setField(ctx, "Form.Dropdown", "collection", "11");
     await setField(ctx, "Form.TextField", "title", "New page");
-    await setField(ctx, "Form.TextField", "newTags", "later, #read");
+    await setField(ctx, "Form.TextField", "tags", "later, #read");
     await press(ctx, "Save Bookmark", 100);
     await waitCalls(ctx, 1);
     assert.deepEqual(posts(ctx), [{ link: "https://example.com/new", collection: { $id: 11 }, pleaseParse: {}, title: "New page", tags: ["later", "read"] }], "the POST body");
@@ -764,7 +764,7 @@ async function flowEndToEnd() {
     // Add Bookmark, then Search finds the new bookmark.
     await press(ctx, "Add Bookmark", 400);
     await setField(ctx, "Form.TextField", "link", "https://example.com");
-    await setField(ctx, "Form.TextField", "newTags", "read");
+    await setField(ctx, "Form.TextField", "tags", "read");
     await setField(ctx, "Form.Dropdown", "collection", "11");
     await setField(ctx, "Form.Checkbox", "important", true);
     await press(ctx, "Save Bookmark", 100);
@@ -852,6 +852,26 @@ async function flowPageDetails() {
   }});
 }
 
+async function flowAddDefaultsAndTags() {
+  return run("add-bookmark", {
+    seed: searchSeed({ collections: [{ id: 11, title: "Bookmarks", sort: 0, count: 0 }], tags: [{ name: "Read", count: 1 }] }),
+    clipboard: "https://example.com/new",
+    interact: async (ctx) => {
+      const field = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0];
+      assert.equal(field("Form.Dropdown", "collection").props.value, "11", "Bookmarks is the default");
+      assert.equal(field("Form.TextField", "newTags"), undefined, "one field handles all tags");
+      await setField(ctx, "Form.TextField", "tags", "re");
+      await press(ctx, "Insert #Read");
+      assert.equal(field("Form.TextField", "tags").props.value, "Read, ", "the suggestion completes the current tag");
+      await setField(ctx, "Form.TextField", "tags", "Read, brand new, read");
+      await press(ctx, "Save Bookmark", 700);
+      assert.deepEqual(posts(ctx)[0].tags, ["Read", "brand new"], "existing and new tags share one field");
+      assert.equal(posts(ctx)[0].collection.$id, 11);
+      assert.equal(ctx.storage.lastCollection, "11", "save remembers the selected collection");
+    },
+  });
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -863,6 +883,7 @@ const FLOWS_ALL = [
   flowTagSuggestions,
   flowTrashConfirmation,
   flowPageDetails,
+  flowAddDefaultsAndTags,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

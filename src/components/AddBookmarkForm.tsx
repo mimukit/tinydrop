@@ -21,7 +21,7 @@ import { RaindropClient } from "../api/client";
 import { getAuth } from "../auth/secrets";
 import { UNSORTED_COLLECTION, type RaindropPatch } from "../api/types";
 import { duplicateText, findDuplicate, httpUrl, normalizeLink, type Duplicate } from "../parse/link";
-import { mergeTags } from "../parse/tags";
+import { defaultCollection, formTags, formTagSuggestions } from "../parse/add-form";
 import { ALL_VALUE, collectionChoices } from "../search/collections";
 import type { CollectionRow, TagRow } from "../store/types";
 import type { BookmarkWriter } from "../write/writer";
@@ -38,8 +38,7 @@ interface Values {
   excerpt: string;
   note: string;
   collection: string;
-  tags: string[];
-  newTags: string;
+  tags: string;
   important: boolean;
 }
 
@@ -58,6 +57,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
   const [collection, setCollection] = useState(String(UNSORTED_COLLECTION));
   const [collections, setCollections] = useState<CollectionRow[]>([]);
   const [tags, setTags] = useState<TagRow[]>([]);
+  const [tagText, setTagText] = useState("");
   const [duplicate, setDuplicate] = useState<Duplicate | undefined>(undefined);
   const [warnedFor, setWarnedFor] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(true);
@@ -78,7 +78,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
         if (!live) return;
         setCollections(found);
         setTags(foundTags);
-        if (last !== undefined && (Number(last) === UNSORTED_COLLECTION || found.some((c) => String(c.id) === last))) setCollection(last);
+        setCollection(defaultCollection(found, last));
         if (httpUrl(clip)) setLink((l) => l || clip!.trim());
       } catch (error) {
         if (live) await showFailure(error, { title: "Could not read the bookmark store" });
@@ -158,7 +158,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
     if (values.title?.trim()) patch.title = values.title.trim();
     if (values.excerpt?.trim()) patch.excerpt = values.excerpt.trim();
     if (values.note?.trim()) patch.note = values.note;
-    const allTags = mergeTags(values.tags ?? [], values.newTags ?? "");
+    const allTags = formTags(values.tags ?? tagText, tags.map((tag) => tag.name));
     if (allTags.length) patch.tags = allTags;
     if (values.important) patch.important = true;
     setBusy(true);
@@ -180,6 +180,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
 
   const choices = collectionChoices(collections).filter((c) => c.value !== ALL_VALUE);
   const tagNames = tags.map((t) => t.name);
+  const suggestions = formTagSuggestions(tagText, tagNames);
 
   return (
     <Form
@@ -189,6 +190,13 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
         <ActionPanel>
           <Action.SubmitForm title="Save Bookmark" icon={Icon.Plus} onSubmit={(v: Values) => void submit(v)} />
           <Action title="Fetch Page Details" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => void fetchDetails()} />
+          {suggestions.length > 0 && (
+            <ActionPanel.Section title="Matching Tags">
+              {suggestions.map((suggestion) => (
+                <Action key={suggestion.name} title={`Insert #${suggestion.name}`} icon={Icon.Tag} onAction={() => setTagText(suggestion.text)} />
+              ))}
+            </ActionPanel.Section>
+          )}
         </ActionPanel>
       }
     >
@@ -203,12 +211,11 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
           <Form.Dropdown.Item key={c.value} value={c.value} title={c.title} />
         ))}
       </Form.Dropdown>
-      <Form.TagPicker id="tags" title="Tags" defaultValue={[]}>
-        {tagNames.map((name) => (
-          <Form.TagPicker.Item key={name} value={name} title={name} />
-        ))}
-      </Form.TagPicker>
-      <Form.TextField id="newTags" title="New Tags" placeholder="Comma-separated" defaultValue="" />
+      <Form.TextField id="tags" title="Tags" placeholder="read, design, new tag" value={tagText} onChange={setTagText} />
+      <Form.Description text="Separate tags with commas. New names create tags when you save." />
+      {suggestions.length > 0 && (
+        <Form.Description title="Matching Tags" text={`${suggestions.map((s) => s.name).join(", ")}. Select Insert from Actions to complete a tag.`} />
+      )}
       <Form.Checkbox id="important" label="Favorite" defaultValue={false} />
     </Form>
   );
