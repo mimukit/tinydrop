@@ -68,6 +68,8 @@ Two preferences control refresh on open. "Refresh on open" (off by default) runs
 
 Terms combine with AND, and so do `in:` and the collection dropdown. An unknown collection name or an ambiguous prefix shows an error row. An operator with a value it does not know, such as `type:foo`, counts as plain words. Results rank by text match, then by how often you opened the bookmark, then by date.
 
+Type `#` to show up to ten stored tags. Type more letters to narrow the suggestions by prefix. Select a tag with the arrow keys and press Enter to insert it. The search keeps earlier filters and quotes tag names that contain spaces. Suggestions use the local store and work offline.
+
 ## Quick Add syntax
 
 | Write | Example | Result |
@@ -80,6 +82,8 @@ Terms combine with AND, and so do `in:` and the collection dropdown. An unknown 
 | Anything else | `a good read` | The title. Left empty, Raindrop fills it in. |
 
 With no collection, the bookmark goes to Unsorted. While you type `~`, rows suggest collection names, and `↵` on a suggestion inserts it. If the link is already saved, the preview says where ("Already saved in Dev"); the first `↵` warns and the second saves it again. Links compare with a lowercase host, no trailing `/` and no `utm_*` parameters.
+
+While you type `#`, rows suggest stored tags. Type more letters to narrow the suggestions by prefix. Select a tag row and press Enter to insert it. Quick Add keeps the URL and other tokens. You can still type a new tag without selecting a suggestion.
 
 ## Keys on a bookmark row
 

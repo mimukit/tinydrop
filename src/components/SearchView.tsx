@@ -26,6 +26,7 @@ import type { RaindropType } from "../api/types";
 import { ALL_VALUE, buildQuery, collectionChoices, collectionPath } from "../search/collections";
 import { detailMarkdown, markdownLink, shortDate, syncAgo, tagText, webAppUrl } from "../search/format";
 import { isEmptySearch, parseSearch } from "../search/parse";
+import { tagSuggestions } from "../search/tags";
 import type { BookmarkRow, CollectionRow, TagRow } from "../store/types";
 import type { BookmarkWriter } from "../write/writer";
 import { daysAgo, fullResyncDue, isStale, progressText, resyncEstimate, syncSummary, type RefreshAge } from "../sync/text";
@@ -430,6 +431,7 @@ export function SearchView() {
   );
 
   const choices = collectionChoices(collections ?? []);
+  const suggestions = phase === "ready" ? tagSuggestions(text, tags.map((tag) => tag.name)) : [];
   const navigationTitle = phase === "ready" ? `Search Bookmarks · ${syncAgo(lastSync, Date.now())}` : "Search Bookmarks";
   const detailAction = (
     <Action
@@ -461,10 +463,11 @@ export function SearchView() {
     <List
       isLoading={busy || phase === "loading"}
       filtering={false}
+      searchText={text}
       onSearchTextChange={setText}
       searchBarPlaceholder="Search, or #tag type:article in:Dev is:fav -word"
       navigationTitle={navigationTitle}
-      isShowingDetail={showDetail && rows.length > 0}
+      isShowingDetail={showDetail && rows.length > 0 && suggestions.length === 0}
       searchBarAccessory={
         <List.Dropdown tooltip="Collection" value={dropdown} onChange={setDropdown}>
           {choices.map((c) => (
@@ -473,6 +476,23 @@ export function SearchView() {
         </List.Dropdown>
       }
     >
+      {suggestions.length > 0 && (
+        <List.Section title="Tags">
+          {suggestions.map((suggestion) => (
+            <List.Item
+              key={`tag-${suggestion.name}`}
+              id={`tag-${suggestion.name}`}
+              title={`#${suggestion.name}`}
+              icon={Icon.Tag}
+              actions={
+                <ActionPanel>
+                  <Action title="Insert Tag" icon={Icon.Text} onAction={() => setText(suggestion.text)} />
+                </ActionPanel>
+              }
+            />
+          ))}
+        </List.Section>
+      )}
       {phase === "ready" && queryError !== undefined && (
         <List.Item
           title={queryError}
@@ -488,7 +508,7 @@ export function SearchView() {
           }
         />
       )}
-      {phase === "ready" && queryError === undefined && !busy && rows.length === 0 && (
+      {phase === "ready" && queryError === undefined && !busy && rows.length === 0 && suggestions.length === 0 && (
         <List.Item
           title={text.trim() || dropdown !== ALL_VALUE ? "No bookmark matches" : "No bookmarks yet"}
           subtitle={text.trim() || dropdown !== ALL_VALUE ? undefined : "Press ⌘R to sync the store"}

@@ -183,6 +183,7 @@ async function supportDir({ seed = false } = {}) {
     await store.upsertPage(seed === true ? BOOKMARKS : seed.bookmarks);
     if (seed.state) await store.setSyncState(seed.state);
     if (seed.collections) await store.replaceCollections(seed.collections);
+    if (seed.tags) await store.replaceTags(seed.tags);
     for (const id of seed.opens ?? []) await store.recordOpen(id);
   }
   return dir;
@@ -825,6 +826,56 @@ async function flowEndToEnd() {
   }});
 }
 
+async function flowTagSuggestions() {
+  return run("search-bookmarks", {
+    seed: searchSeed({ tags: [{ name: "rust", count: 1 }, { name: "read later", count: 1 }] }),
+    interact: async (ctx) => {
+      await typeSearch(ctx, "#ru");
+      assert.ok(rowTitles(ctx).includes("#rust"), "the stored tag appears");
+      assert.ok(!rowTitles(ctx).includes("No bookmark matches"), "suggestions replace the empty row");
+      await press(ctx, "Insert Tag");
+      await waitFor(() => rowTitles(ctx).includes("Rust ownership explained"), "the completed tag finds bookmarks");
+      const list = findAll(ctx.tree(), (n) => n.type === "List").at(-1);
+      assert.equal(list.props.searchText, "#rust ", "the search bar receives the completed token");
+      assert.ok(!rowTitles(ctx).includes("#rust"), "the trailing space dismisses suggestions");
+      await typeSearch(ctx, "type:article #re");
+      await press(ctx, "Insert Tag");
+      const completed = findAll(ctx.tree(), (n) => n.type === "List").at(-1);
+      assert.equal(completed.props.searchText, 'type:article #"read later" ', "other filters remain and spaces are quoted");
+      assert.equal(ctx.calls.length, 0, "tag suggestions make no API requests");
+    },
+  });
+}
+
+async function flowQuickAddTagSuggestions() {
+  return run("quick-add", {
+    seed: searchSeed({ tags: [{ name: "rust", count: 1 }, { name: "read later", count: 1 }] }),
+    interact: async (ctx) => {
+      await typeSearch(ctx, "https://example.com #");
+      assert.ok(rowTitles(ctx).includes("#rust"), "a bare hash shows stored tags");
+      assert.ok(rowTitles(ctx).includes("#read later"), "tags with spaces appear");
+      await typeSearch(ctx, "https://example.com #RU");
+      assert.ok(rowTitles(ctx).includes("#rust"), "prefix matching ignores case");
+      assert.ok(!rowTitles(ctx).includes("#read later"), "the prefix narrows the tags");
+      await press(ctx, "Insert Tag");
+      const searchText = () => findAll(ctx.tree(), (n) => n.type === "List").at(-1).props.searchText;
+      assert.equal(searchText(), "https://example.com #rust ", "selection keeps the URL");
+      assert.ok(!rowTitles(ctx).includes("#rust"), "selection closes suggestions");
+      await typeSearch(ctx, 'https://example.com #rust ~Dev !fav #"read');
+      await press(ctx, "Insert Tag");
+      assert.equal(searchText(), 'https://example.com #rust ~Dev !fav #"read later" ', "selection quotes spaces and keeps other tokens");
+      await typeSearch(ctx, "https://example.com \\#ru");
+      assert.ok(!rowTitles(ctx).includes("#rust"), "an escaped hash stays in the title");
+      await typeSearch(ctx, "https://example.com #new-tag");
+      assert.ok(!rowTitles(ctx).includes("#rust"), "a new tag needs no stored match");
+      assert.equal(ctx.calls.length, 0, "suggestions send no requests");
+      await press(ctx, "Save Bookmark", 100);
+      await waitCalls(ctx, 1);
+      assert.deepEqual(posts(ctx)[0].tags, ["new-tag"], "new tags remain valid");
+    },
+  });
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -833,6 +884,8 @@ const FLOWS_ALL = [
   flowRowWritesAndUndo, flowEditAndTags,
   flowQuickAddFromSearch, flowQuickAddUnknownCollection, flowQuickAddDuplicate, flowAddBookmarkForm,
   flowEndToEnd,
+  flowTagSuggestions,
+  flowQuickAddTagSuggestions,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

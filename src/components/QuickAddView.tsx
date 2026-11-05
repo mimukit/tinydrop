@@ -26,8 +26,10 @@ import {
   parseQuickAdd,
   resolveTarget,
   trailingCollection,
+  tokenize,
 } from "../parse/quickadd";
 import { collectionPath } from "../search/collections";
+import { tagSuggestions } from "../search/tags";
 import type { CollectionRow } from "../store/types";
 import type { BookmarkWriter } from "../write/writer";
 import { showFailure } from "./failure";
@@ -50,6 +52,7 @@ export function QuickAddView({
   const [text, setText] = useState(initialText ?? "");
   const [clipboard, setClipboard] = useState<string | undefined>(undefined);
   const [collections, setCollections] = useState<CollectionRow[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
   const [signedIn, setSignedIn] = useState<boolean | undefined>(undefined);
   const [duplicate, setDuplicate] = useState<Duplicate | undefined>(undefined);
   const [warnedFor, setWarnedFor] = useState<string | undefined>(undefined);
@@ -65,9 +68,10 @@ export function QuickAddView({
         setSignedIn(!!token);
         if (!token) return;
         const store = await openStore();
-        const [found, clip] = await Promise.all([store.collections(), Clipboard.readText().catch(() => undefined)]);
+        const [found, clip, foundTags] = await Promise.all([store.collections(), Clipboard.readText().catch(() => undefined), store.tags()]);
         if (!live) return;
         setCollections(found);
+        setTags(foundTags.map((tag) => tag.name));
         setClipboard(clip ?? undefined);
       } catch (error) {
         if (live) await showFailure(error, { title: "Could not read the bookmark store" });
@@ -153,6 +157,15 @@ export function QuickAddView({
         .map((c) => ({ id: c.id, title: c.title, path: collectionPath(c.id, collections) ?? c.title }))
     : [];
 
+  // Use Quick Add's token boundaries so escaped symbols and title quotes stay literal.
+  const lastToken = tokenize(text).at(-1);
+  const matchingTags = lastToken?.lead === "#" && text.endsWith(lastToken.text)
+    ? tagSuggestions(lastToken.text, tags).map((suggestion) => ({
+        ...suggestion,
+        text: text.slice(0, text.length - lastToken.text.length) + suggestion.text,
+      }))
+    : [];
+
   const accessories: List.Item.Accessory[] = [
     ...(target.ok ? [{ tag: { value: target.title, color: Color.Blue }, tooltip: "Collection" }] : []),
     ...draft.tags.map((t) => ({ tag: { value: `#${t}`, color: Color.Purple } })),
@@ -207,6 +220,23 @@ export function QuickAddView({
               actions={
                 <ActionPanel>
                   <Action title="Insert" icon={Icon.Text} onAction={() => insert(s.title)} />
+                  {saveAction}
+                </ActionPanel>
+              }
+            />
+          ))}
+        </List.Section>
+      )}
+      {matchingTags.length > 0 && (
+        <List.Section title="Tags">
+          {matchingTags.map((suggestion) => (
+            <List.Item
+              key={`tag-${suggestion.name}`}
+              title={`#${suggestion.name}`}
+              icon={Icon.Tag}
+              actions={
+                <ActionPanel>
+                  <Action title="Insert Tag" icon={Icon.Text} onAction={() => setText(suggestion.text)} />
                   {saveAction}
                 </ActionPanel>
               }
