@@ -339,6 +339,11 @@ LIMIT 500;`);
     await this.write("DELETE FROM sync_seen;");
   }
 
+  async unseenIds(): Promise<number[]> {
+    const rows = await this.read("SELECT id FROM bookmarks WHERE id NOT IN (SELECT id FROM sync_seen) ORDER BY id;");
+    return rows.map((r) => Number(r.id));
+  }
+
   async deleteUnseen(): Promise<number> {
     const unseen = "SELECT id FROM bookmarks WHERE id NOT IN (SELECT id FROM sync_seen)";
     const found = await this.read(`SELECT count(*) AS n FROM (${unseen});`);

@@ -33,6 +33,8 @@ type Failure = { at: (call: string) => boolean; error: () => Error; times: numbe
 class FakeClient implements SyncClient {
   calls: string[] = [];
   failures: Failure[] = [];
+  /** Runs after a library page is served, to change the server in the middle of a run. */
+  afterPage?: (page: number) => void;
   constructor(
     public library: Raindrop[] = [],
     public trash: Raindrop[] = [],
@@ -58,7 +60,15 @@ class FakeClient implements SyncClient {
     } else {
       items = [...this.library].sort((a, b) => Date.parse(b.lastUpdate!) - Date.parse(a.lastUpdate!));
     }
-    return { result: true, items: items.slice(page * perpage, (page + 1) * perpage), count: items.length };
+    const reply = { result: true, items: items.slice(page * perpage, (page + 1) * perpage), count: items.length };
+    if (collectionId !== -99) this.afterPage?.(page);
+    return reply;
+  }
+  async getRaindrop(id: number): Promise<Raindrop> {
+    this.record(`raindrop/${id}`);
+    const found = this.library.find((r) => r._id === id) ?? this.trash.find((r) => r._id === id);
+    if (!found) throw new RaindropApiError(404, `/raindrop/${id}`, "{}");
+    return found;
   }
   async getCollections(): Promise<Collection[]> {
     this.record("collections");
@@ -107,6 +117,9 @@ class FakeStore implements SyncStore {
   }
   async clearSeen() {
     this.seen.clear();
+  }
+  async unseenIds() {
+    return [...this.rows.keys()].filter((id) => !this.seen.has(id));
   }
   async deleteUnseen() {
     const gone = [...this.rows.keys()].filter((id) => !this.seen.has(id));
@@ -263,6 +276,50 @@ describe.skipIf(!hasBinary)("runSync on the real sqlite3 store", () => {
     const seen = await runProcess(binary, ["-json", path, "SELECT count(*) AS n FROM sync_seen;"]);
     expect(JSON.parse(seen.stdout)).toEqual([{ n: 0 }]);
     expect(await store.getSyncState(SYNC_KEYS.lastFull)).toBe(String(NOW));
+  });
+
+  it("a server edit during a full resync keeps the moved bookmark and its opens row", async () => {
+    const library = Array.from({ length: 150 }, (_, i) => bm(i + 1, i + 1));
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage(library);
+    await store.recordOpen(140, 1000);
+    const client = new FakeClient(library.map((b) => ({ ...b })));
+    // After page 0, bookmark 140 (on page 2) changes, so it moves to page 0, which the run already read.
+    client.afterPage = (page) => {
+      if (page === 0) client.library.find((b) => b._id === 140)!.lastUpdate = new Date(NOW).toISOString();
+    };
+    const result = await runSync(client, store, { ...opts, full: true });
+    expect(result.removed).toBe(0);
+    expect(await store.getBookmark(140)).toBeDefined();
+    const opens = await runProcess(binary, ["-json", path, "SELECT bookmark_id FROM opens;"]);
+    expect(JSON.parse(opens.stdout)).toEqual([{ bookmark_id: 140 }]);
+  });
+
+  it("a server delete during a full resync keeps the bookmark that shifts up a page", async () => {
+    const library = Array.from({ length: 150 }, (_, i) => bm(i + 1, i + 1));
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage(library);
+    await store.recordOpen(51, 1000);
+    const client = new FakeClient(library.map((b) => ({ ...b })));
+    // After page 0, bookmark 1 (on page 0) goes away, so bookmark 51 shifts up into page 0.
+    client.afterPage = (page) => {
+      if (page === 0) client.library = client.library.filter((b) => b._id !== 1);
+    };
+    const result = await runSync(client, store, { ...opts, full: true });
+    // Bookmark 1 was read before the delete, so a later sync removes it; this run removes nothing.
+    expect(result.removed).toBe(0);
+    expect(await store.getBookmark(51)).toBeDefined();
+    const opens = await runProcess(binary, ["-json", path, "SELECT bookmark_id FROM opens;"]);
+    expect(JSON.parse(opens.stdout)).toEqual([{ bookmark_id: 51 }]);
+  });
+
+  it("a full resync drops an unseen bookmark the server has in Trash", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bm(1, 5), bm(2, 4)]);
+    const client = new FakeClient([bm(1, 5)], [{ ...bm(2, 4), collection: { $id: -99 } }]);
+    const result = await runSync(client, store, { ...opts, full: true });
+    expect(result.removed).toBe(1);
+    expect(await store.getBookmark(2)).toBeUndefined();
   });
 
   it("deleteIds counts only the rows it removed", async () => {

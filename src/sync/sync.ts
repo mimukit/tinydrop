@@ -17,10 +17,10 @@ import { resetWaitMs } from "../api/pace";
 import { ALL_COLLECTION, TRASH_COLLECTION, type Collection, type Raindrop, type User } from "../api/types";
 import { collectionRow, tagRow, type BookmarkStore, type CollectionRow } from "../store/types";
 
-export type SyncClient = Pick<RaindropClient, "getRaindrops" | "getCollections" | "getChildCollections" | "getUser" | "getTags">;
+export type SyncClient = Pick<RaindropClient, "getRaindrops" | "getRaindrop" | "getCollections" | "getChildCollections" | "getUser" | "getTags">;
 export type SyncStore = Pick<
   BookmarkStore,
-  "upsertPage" | "deleteIds" | "clearSeen" | "deleteUnseen" | "replaceCollections" | "replaceTags" | "getSyncState" | "setSyncState"
+  "upsertPage" | "deleteIds" | "clearSeen" | "unseenIds" | "deleteUnseen" | "replaceCollections" | "replaceTags" | "getSyncState" | "setSyncState"
 >;
 
 /** `sync_state` keys the planner owns. */
@@ -187,6 +187,20 @@ export async function runSync(client: SyncClient, store: SyncStore, options: Syn
   // Drop what the server no longer has.
   let removed: number;
   if (state.kind === "full") {
+    // A server edit or delete during the run shifts rows between pages, so the pager can miss a
+    // live bookmark. Ask the server for each unseen ID before it goes, and keep what still exists.
+    const alive: Raindrop[] = [];
+    for (const id of await store.unseenIds()) {
+      let item: Raindrop | undefined;
+      try {
+        item = await call(() => client.getRaindrop(id));
+      } catch (error) {
+        if (error instanceof RaindropApiError && error.isNotFound) continue;
+        throw error;
+      }
+      if (item && item.collection?.$id !== TRASH_COLLECTION) alive.push(item);
+    }
+    if (alive.length > 0) await store.upsertPage(alive, { seen: true });
     removed = await store.deleteUnseen();
   } else {
     const search = `lastUpdate:>${trashCutoff(state.mark as string)}`;

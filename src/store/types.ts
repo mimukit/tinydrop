@@ -105,6 +105,8 @@ export interface BookmarkStore {
    * deletes `opens` rows with no bookmark, and forgets the seen IDs. Resolves to the count of bookmarks removed.
    */
   deleteUnseen(): Promise<number>;
+  /** The IDs of stored bookmarks a full resync has not seen yet. */
+  unseenIds(): Promise<number[]>;
   count(): Promise<number>;
   collections(): Promise<CollectionRow[]>;
   replaceCollections(collections: CollectionRow[]): Promise<void>;
