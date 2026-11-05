@@ -17,6 +17,7 @@ import {
   type CollectionRow,
   type SearchQuery,
   type TagRow,
+  type UpsertOptions,
 } from "./types";
 
 export const DEFAULT_SQLITE3 = "/usr/bin/sqlite3";
@@ -285,14 +286,20 @@ FROM bookmarks b LEFT JOIN opens o ON o.bookmark_id = b.id WHERE b.id = ${sqlInt
     return rows[0] ? toBookmark(rows[0]) : undefined;
   }
 
-  async upsertPage(items: Raindrop[]): Promise<void> {
-    if (items.length === 0) return;
-    await this.write(items.map(upsertBookmarkSql).join("\n"));
+  async upsertPage(items: Raindrop[], options: UpsertOptions = {}): Promise<void> {
+    const script = items.map(upsertBookmarkSql);
+    if (options.seen && items.length > 0) {
+      script.push(`INSERT OR IGNORE INTO sync_seen (id) VALUES ${items.map((i) => `(${sqlInt(i._id)})`).join(", ")};`);
+    }
+    if (options.syncState && Object.keys(options.syncState).length > 0) script.push(this.syncStateSql(options.syncState));
+    if (script.length === 0) return;
+    await this.write(script.join("\n"));
   }
 
-  async deleteIds(ids: number[]): Promise<void> {
-    if (ids.length === 0) return;
+  async deleteIds(ids: number[]): Promise<number> {
+    if (ids.length === 0) return 0;
     const list = sqlIntList(ids);
+    const found = await this.read(`SELECT count(*) AS n FROM bookmarks WHERE id IN (${list});`);
     await this.write(
       [
         `DELETE FROM bookmarks WHERE id IN (${list});`,
@@ -301,6 +308,26 @@ FROM bookmarks b LEFT JOIN opens o ON o.bookmark_id = b.id WHERE b.id = ${sqlInt
         `DELETE FROM opens WHERE bookmark_id IN (${list});`,
       ].join("\n"),
     );
+    return Number(found[0]?.n ?? 0);
+  }
+
+  async clearSeen(): Promise<void> {
+    await this.write("DELETE FROM sync_seen;");
+  }
+
+  async deleteUnseen(): Promise<number> {
+    const unseen = "SELECT id FROM bookmarks WHERE id NOT IN (SELECT id FROM sync_seen)";
+    const found = await this.read(`SELECT count(*) AS n FROM (${unseen});`);
+    await this.write(
+      [
+        `DELETE FROM highlights WHERE bookmark_id IN (${unseen});`,
+        `DELETE FROM bookmarks_fts WHERE rowid IN (${unseen});`,
+        `DELETE FROM bookmarks WHERE id NOT IN (SELECT id FROM sync_seen);`,
+        "DELETE FROM opens WHERE bookmark_id NOT IN (SELECT id FROM bookmarks);",
+        "DELETE FROM sync_seen;",
+      ].join("\n"),
+    );
+    return Number(found[0]?.n ?? 0);
   }
 
   async count(): Promise<number> {

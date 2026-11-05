@@ -51,6 +51,20 @@ const BOOKMARKS = [
     tags: [], collection: { $id: -1 }, important: true, created: "2026-10-02T00:00:00.000Z", lastUpdate: "2026-11-02T00:00:00.000Z",
   },
 ];
+/** On the server only: an incremental sync picks it up. */
+const NEW_ON_SERVER = {
+  _id: 103, link: "https://ziglang.org/comptime", title: "Zig comptime", domain: "ziglang.org", type: "article",
+  tags: ["zig"], collection: { $id: 11 }, created: "2026-11-03T00:00:00.000Z", lastUpdate: "2026-11-03T00:00:00.000Z",
+};
+/** In the seeded store and in the server's Trash: a sync removes it. */
+const TRASHED = {
+  _id: 104, link: "https://example.com/old", title: "Old trashed page", domain: "example.com", type: "link",
+  tags: [], collection: { $id: -99 }, created: "2026-09-01T00:00:00.000Z", lastUpdate: "2026-11-04T00:00:00.000Z",
+};
+const SERVER_BOOKMARKS = [...BOOKMARKS, NEW_ON_SERVER];
+const SERVER_TRASH = [TRASHED];
+/** The sync mark of a seeded store that synced before: older than 103, newer than 101. */
+const SYNCED_MARK = "2026-11-01T12:00:00.000Z";
 /** Tokens the fake server accepts. Any other token gets a 401. */
 const GOOD_TOKENS = new Set(["tok", "new-token"]);
 
@@ -69,8 +83,16 @@ function fakeRaindrop(calls) {
     if (!GOOD_TOKENS.has(auth.replace(/^Bearer /, ""))) return reply(401, { result: false, error: "Unauthorized" });
     const p = url.pathname.replace("/rest/v1", "");
     if (p === "/user") return reply(200, { result: true, user: USER });
-    if (p === "/raindrops/0") return reply(200, { result: true, items: BOOKMARKS, count: BOOKMARKS.length });
-    if (p === "/raindrops/-99") return reply(200, { result: true, items: [], count: 0 });
+    const page = Number(url.searchParams.get("page") ?? 0), perpage = Number(url.searchParams.get("perpage") ?? 50);
+    const pageOf = (items) => ({ result: true, items: items.slice(page * perpage, (page + 1) * perpage), count: items.length });
+    if (p === "/raindrops/0") {
+      const sorted = [...SERVER_BOOKMARKS].sort((a, b) => Date.parse(b.lastUpdate) - Date.parse(a.lastUpdate));
+      return reply(200, pageOf(sorted));
+    }
+    if (p === "/raindrops/-99") {
+      const cutoff = (url.searchParams.get("search") ?? "").match(/^lastUpdate:>(\d{4}-\d{2}-\d{2})$/)?.[1] ?? "";
+      return reply(200, pageOf(SERVER_TRASH.filter((b) => b.lastUpdate > cutoff)));
+    }
     if (p === "/collections") return reply(200, { result: true, items: COLLECTIONS });
     if (p === "/collections/childrens") return reply(200, { result: true, items: CHILDREN });
     if (p === "/tags/0") return reply(200, { result: true, items: [{ _id: "rust", count: 1 }, { _id: "read", count: 1 }] });
@@ -136,12 +158,25 @@ function findAll(node, pred, out = []) {
   return out;
 }
 
-/** A fresh temp supportPath; with `seed`, the store already holds the fake bookmarks. */
+/**
+ * A fresh temp supportPath. `seed: true` fills the store with the fake bookmarks;
+ * `seed: { bookmarks, state }` fills it with those rows and `sync_state` entries.
+ */
 async function supportDir({ seed = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tinydrop-smoke-"));
-  if (seed) await new SqliteStore({ path: join(dir, DB_FILE) }).upsertPage(BOOKMARKS);
+  if (seed) {
+    const store = new SqliteStore({ path: join(dir, DB_FILE) });
+    await store.upsertPage(seed === true ? BOOKMARKS : seed.bookmarks);
+    if (seed.state) await store.setSyncState(seed.state);
+  }
   return dir;
 }
+
+/** A store that synced before: the server has one new bookmark and one trashed. */
+const SYNCED_SEED = { bookmarks: [...BOOKMARKS, TRASHED], state: { sync_mark: SYNCED_MARK } };
+
+/** Reads the store a flow ran against. */
+const storeOf = (ctx) => new SqliteStore({ path: join(ctx.supportPath, DB_FILE) });
 
 const tempDirs = [];
 
@@ -149,12 +184,12 @@ const tempDirs = [];
  * Runs one command in a fresh harness. `keychain` is the starting Keychain,
  * `interact` drives the screen. Returns the failure count.
  */
-async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, interact } = {}) {
+async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, interact } = {}) {
   const cmd = manifest.commands.find((c) => c.name === commandName);
   assert.ok(cmd, `command ${commandName} is in the manifest`);
   const supportPath = await supportDir({ seed });
   tempDirs.push(supportPath);
-  const calls = [], toasts = [];
+  const calls = [], toasts = [], updates = [], alerts = [];
   const storage = {};
   const harness = createHarness({
     verbose: !!process.env.VERBOSE,
@@ -162,7 +197,9 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
       "fetch.request": fakeRaindrop(calls),
       "feedback.showToast": (a) => { toasts.push(a[0]); return `toast-${toasts.length}`; },
       "feedback.showHUD": (a) => { toasts.push({ hud: a[0] }); return null; },
-      "feedback.confirmAlert": () => true,
+      "feedback.updateToast": (a) => { updates.push(a[1]); return null; },
+      "feedback.hideToast": () => null,
+      "feedback.confirmAlert": (a) => { alerts.push(a[0]); return true; },
       "storage.get": (a) => storage[a[0]] ?? null,
       "storage.set": (a) => { storage[a[0]] = a[1]; return null; },
       "storage.remove": (a) => { delete storage[a[0]]; return null; },
@@ -171,7 +208,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
   fakeKeychain(harness, keychain);
   harness.boot(bootConfig({
     environment: { ...bootConfig().environment, extensionName: manifest.name, commandName, commandMode: cmd.mode, assetsPath: join(dist, "assets"), supportPath },
-    preferences: Object.fromEntries((manifest.preferences ?? []).map((p) => [p.name, preferenceDefault(p)])),
+    preferences: { ...Object.fromEntries((manifest.preferences ?? []).map((p) => [p.name, preferenceDefault(p)])), ...preferences },
     launchProps: { arguments: args },
   }));
   const file = join(dist, `${commandName}.js`);
@@ -180,7 +217,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
   console.log(`\n=== ${commandName} ===`);
   if (harness.state.failures.length) console.log("FAILURES:", harness.state.failures);
   let failed = harness.state.failures.length;
-  const ctx = { harness, calls, toasts, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
+  const ctx = { harness, calls, toasts, updates, alerts, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
   if (interact) {
     try {
       await interact(ctx);
@@ -219,6 +256,25 @@ async function setField(ctx, type, id, value) {
   ctx.harness.dispatch("s1", field.props.onTinycastChange.$fn, [value]);
   await sleep(100);
 }
+
+/** Polls until `pred()` is true; the pacer spaces API calls 500 ms apart, so a sync takes seconds. */
+async function waitFor(pred, what, ms = 15_000) {
+  const end = Date.now() + ms;
+  while (!pred()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await sleep(100);
+  }
+}
+
+/** Runs a toast's action, as Tinycast does when you press it. */
+function runToastAction(ctx, action) {
+  assert.ok(action?.token, "the toast action has a token");
+  ctx.harness.call(`__tinycast.runToastAction(${JSON.stringify(action.token)})`);
+}
+
+const huds = (ctx) => ctx.toasts.filter((t) => t.hud).map((t) => t.hud);
+const toastTitles = (ctx) => [...ctx.toasts, ...ctx.updates].map((t) => t.title).filter(Boolean);
+const decoded = (calls) => calls.map((c) => decodeURIComponent(c));
 
 const rowTitles = (ctx) => findAll(ctx.tree(), (n) => n.type === "List.Item").map((n) => n.props.title);
 const sent = (calls, re) => calls.some((c) => re.test(c));
@@ -288,11 +344,111 @@ async function flowPlaceholders() {
   let failed = 0;
   failed += await run("add-bookmark", { interact: async (ctx) => assert.ok(ctx.tree(), "Add Bookmark renders") });
   failed += await run("quick-add", { args: { text: "https://example.com #read" }, interact: async (ctx) => assert.ok(ctx.tree(), "Quick Add renders") });
-  failed += await run("sync", { interact: async (ctx) => assert.ok(ctx.toasts.some((t) => t.hud), "Sync shows a HUD") });
   return failed;
 }
 
-const FLOWS = [flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut, flowPlaceholders];
+/** Phase 4: the Sync command on a store that synced before: one change page, the Trash search, a HUD with the counts. */
+async function flowSyncCommand() {
+  return run("sync", { seed: SYNCED_SEED, interact: async (ctx) => {
+    await waitFor(() => huds(ctx).length > 0, "the HUD");
+    assert.deepEqual(huds(ctx), ["Synced 2 changes, 1 removed"], "the HUD text");
+    const calls = decoded(ctx.calls);
+    assert.ok(calls.length <= 6, `6 calls or fewer: ${calls}`);
+    assert.ok(calls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the change page: ${calls}`);
+    assert.ok(calls.includes("GET /raindrops/-99?perpage=50&page=0&search=lastUpdate:>2026-10-31"), `the Trash search, one day back: ${calls}`);
+    for (const path of ["/collections", "/collections/childrens", "/user", "/tags/0"]) assert.ok(calls.includes(`GET ${path}`), `GET ${path}`);
+    const store = storeOf(ctx);
+    assert.equal((await store.getBookmark(103))?.title, "Zig comptime", "the new bookmark is in the store");
+    assert.equal(await store.getBookmark(104), undefined, "the trashed bookmark is gone");
+    assert.equal(await store.getSyncState("sync_mark"), "2026-11-03T00:00:00.000Z", "the mark moved to the newest change");
+  }});
+}
+
+/** Phase 4: the first Sync is a full one; then the Sync command with a rejected token. */
+async function flowSyncFirstAndRejected() {
+  let failed = await run("sync", { interact: async (ctx) => {
+    await waitFor(() => huds(ctx).length > 0, "the HUD");
+    assert.deepEqual(huds(ctx), ["Synced 3 changes"], "the first sync HUD");
+    assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
+    const names = (await storeOf(ctx).collections()).map((c) => c.title);
+    assert.deepEqual(names.sort(), ["Dev", "Rust"], "the collections are stored");
+  }});
+  failed += await run("sync", { keychain: { "test-token": "revoked" }, interact: async (ctx) => {
+    await waitFor(() => huds(ctx).length > 0, "the HUD");
+    assert.match(huds(ctx)[0], /^Token rejected/, "the 401 HUD");
+  }});
+  return failed;
+}
+
+/** Phase 4: ⌘R in Search shows progress, then the summary, and Search queries the store again. */
+async function flowSearchSync() {
+  return run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
+    await typeSearch(ctx, "comptime");
+    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "no row before the sync");
+    await press(ctx, "Sync Now", 100);
+    await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the sync summary toast");
+    assert.ok(ctx.toasts.some((t) => t.title === "Syncing"), "a progress toast");
+    assert.ok(ctx.updates.some((t) => /^Synced \d+/.test(t.message ?? "")), `a progress line: ${JSON.stringify(ctx.updates)}`);
+    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row after the sync");
+  }});
+}
+
+/** Phase 4: ⌘⇧R asks first, with the estimate, then resyncs every bookmark. */
+async function flowFullResync() {
+  return run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
+    await press(ctx, "Full Resync", 300);
+    assert.equal(ctx.alerts.length, 1, "one confirmation");
+    assert.equal(ctx.alerts[0].title, "Full resync: about 5 calls, 1 minute", "the estimate from the stored total");
+    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
+    assert.equal(await storeOf(ctx).getBookmark(104), undefined, "the bookmark the server lacks is gone");
+    assert.ok((await storeOf(ctx).getSyncState("last_full_sync")) !== undefined, "the full resync time is stored");
+  }});
+}
+
+/** Phase 4: the 7-day reminder toast; its action resyncs with no confirmation. */
+async function flowResyncReminder() {
+  const now = Date.now();
+  const state = { sync_mark: SYNCED_MARK, last_sync: String(now), last_full_sync: String(now - 10 * 86_400_000) };
+  return run("search-bookmarks", { seed: { bookmarks: SYNCED_SEED.bookmarks, state }, interact: async (ctx) => {
+    await waitFor(() => ctx.toasts.some((t) => t.title === "Full resync suggested"), "the reminder toast");
+    const toast = ctx.toasts.find((t) => t.title === "Full resync suggested");
+    assert.equal(toast.message, "Last full resync: 10 days ago");
+    assert.equal(toast.primaryAction?.title, "Run Full Resync");
+    runToastAction(ctx, toast.primaryAction);
+    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
+    assert.equal(ctx.alerts.length, 0, "no confirmation from the reminder");
+  }});
+}
+
+/** Phase 4: refresh on open syncs a stale store when the setting is on, and not when it is off. */
+async function flowRefreshOnOpen() {
+  let failed = await run("search-bookmarks", { seed: SYNCED_SEED, preferences: { refreshOnOpen: true, refreshAge: "1h" }, interact: async (ctx) => {
+    await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the refresh-on-open sync");
+    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row");
+  }});
+  failed += await run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
+    await sleep(500);
+    assert.equal(ctx.calls.length, 0, `no sync with the setting off: ${ctx.calls}`);
+  }});
+  return failed;
+}
+
+/** Phase 4: ⌘R with a rejected token shows "Token rejected" with Open Account, and the action opens Account. */
+async function flowSearchSyncRejected() {
+  return run("search-bookmarks", { seed: true, keychain: { "test-token": "revoked" }, interact: async (ctx) => {
+    await press(ctx, "Sync Now", 100);
+    await waitFor(() => ctx.toasts.some((t) => t.title === "Token rejected"), "the Token rejected toast");
+    const toast = ctx.toasts.find((t) => t.title === "Token rejected");
+    assert.equal(toast.primaryAction?.title, "Open Account", "the toast offers Open Account");
+    runToastAction(ctx, toast.primaryAction);
+    await waitFor(() => rowTitles(ctx).includes("Enter Test Token") || rowTitles(ctx).includes("Token rejected"), "the Account screen");
+  }});
+}
+
+const FLOWS = [
+  flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut, flowPlaceholders,
+  flowSyncCommand, flowSyncFirstAndRejected, flowSearchSync, flowFullResync, flowResyncReminder, flowRefreshOnOpen, flowSearchSyncRejected,
+];
 
 let failures = 0;
 try {

@@ -94,3 +94,14 @@ describe("query timing", () => {
     expect(percentile([], 95)).toBeUndefined();
   });
 });
+
+describe("RaindropClient rate limit error", () => {
+  it("carries X-RateLimit-Reset on the 429 error it throws after its retries", async () => {
+    const reply = { status: 429, body: { result: false }, headers: { "x-ratelimit-reset": "42" } };
+    const { fetch } = fakeFetch([reply, reply, reply]);
+    const error = await new RaindropClient("tok", { ...noWait, fetch }).getUser().catch((e) => e);
+    expect(error).toBeInstanceOf(RaindropApiError);
+    expect(error.isRateLimit).toBe(true);
+    expect(error.rateLimitReset).toBe("42");
+  });
+});

@@ -51,6 +51,13 @@ export interface SearchQuery {
   limit?: number;
 }
 
+export interface UpsertOptions {
+  /** Mark the page's IDs as seen by the full resync in progress. */
+  seen?: boolean;
+  /** `sync_state` entries to write in the same transaction, such as the resume point. */
+  syncState?: Record<string, string>;
+}
+
 export interface BookmarkStore {
   /** Opens the database: the feature check, WAL, the schema and its version. Safe to call twice. */
   open(): Promise<void>;
@@ -59,10 +66,20 @@ export interface BookmarkStore {
   /** The most-opened bookmarks, then the newest. */
   topOpened(limit?: number): Promise<BookmarkRow[]>;
   getBookmark(id: number): Promise<BookmarkRow | undefined>;
-  /** Inserts or updates one page of API bookmarks, with highlights and the FTS row, in one transaction. */
-  upsertPage(items: Raindrop[]): Promise<void>;
-  /** Deletes bookmarks, their highlights, FTS rows and `opens` rows. */
-  deleteIds(ids: number[]): Promise<void>;
+  /**
+   * Inserts or updates one page of API bookmarks, with highlights and the FTS row, in one transaction.
+   * The same transaction marks the IDs as seen by a full resync and writes `syncState`, when given.
+   */
+  upsertPage(items: Raindrop[], options?: UpsertOptions): Promise<void>;
+  /** Deletes bookmarks, their highlights, FTS rows and `opens` rows. Resolves to the count of bookmarks it removed. */
+  deleteIds(ids: number[]): Promise<number>;
+  /** Forgets the IDs a full resync has seen. A full resync calls it once at its start. */
+  clearSeen(): Promise<void>;
+  /**
+   * Ends a full resync: deletes every bookmark it has not seen (with highlights, FTS and `opens` rows),
+   * deletes `opens` rows with no bookmark, and forgets the seen IDs. Resolves to the count of bookmarks removed.
+   */
+  deleteUnseen(): Promise<number>;
   count(): Promise<number>;
   collections(): Promise<CollectionRow[]>;
   replaceCollections(collections: CollectionRow[]): Promise<void>;

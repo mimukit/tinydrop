@@ -1,15 +1,39 @@
 // Search Bookmarks. Reads only the store. Phase 5 adds the operators, the
-// collection dropdown, the type icons and the details panel.
-import { Action, ActionPanel, Color, Icon, List, open, useNavigation, type Keyboard } from "@raycast/api";
-import { useEffect, useState } from "react";
+// collection dropdown, the type icons and the details panel. Phase 4 adds
+// sync: ⌘R, ⌘⇧R after a confirmation, refresh on open, and the 7-day reminder.
+import {
+  Action,
+  ActionPanel,
+  Alert,
+  Color,
+  Icon,
+  List,
+  Toast,
+  confirmAlert,
+  getPreferenceValues,
+  open,
+  showToast,
+  useNavigation,
+  type Keyboard,
+} from "@raycast/api";
+import { useEffect, useRef, useState } from "react";
 import { getAuth } from "../auth/secrets";
 import type { BookmarkRow } from "../store/types";
+import { daysAgo, fullResyncDue, isStale, progressText, resyncEstimate, syncSummary, type RefreshAge } from "../sync/text";
 import { AccountView } from "./AccountView";
 import { showFailure } from "./failure";
 import { openStore } from "./store";
+import { syncNow, syncTimes } from "./sync";
 
 const SEARCH_WAIT_MS = 100;
 const ACCOUNT_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "a" };
+const SYNC_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "r" };
+const FULL_RESYNC_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "r" };
+
+interface Preferences {
+  refreshOnOpen?: boolean;
+  refreshAge?: RefreshAge;
+}
 
 type Phase = "loading" | "signed-out" | "ready" | "broken";
 
@@ -25,8 +49,72 @@ export function SearchView() {
   const [rows, setRows] = useState<BookmarkRow[]>([]);
   const [busy, setBusy] = useState(true);
   const [generation, setGeneration] = useState(0);
+  const [refresh, setRefresh] = useState(0);
+  const syncing = useRef(false);
 
   const openAccount = () => push(<AccountView onChange={() => setGeneration((g) => g + 1)} />);
+
+  /** Runs a sync with a progress toast, then queries the store again. */
+  const sync = async (full: boolean) => {
+    if (syncing.current) return;
+    syncing.current = true;
+    const toast = await showToast({ style: Toast.Style.Animated, title: full ? "Full resync" : "Syncing" });
+    try {
+      const result = await syncNow({
+        full,
+        onProgress: (p) => {
+          toast.message = progressText(p.done, p.total);
+        },
+      });
+      toast.style = Toast.Style.Success;
+      toast.title = syncSummary(result);
+      toast.message = undefined;
+      setRefresh((r) => r + 1);
+    } catch (error) {
+      await toast.hide();
+      await showFailure(error, { title: "Sync failed", openAccount });
+    } finally {
+      syncing.current = false;
+    }
+  };
+
+  const confirmFullResync = async () => {
+    let total: number | undefined;
+    try {
+      total = (await syncTimes()).total;
+    } catch {
+      total = undefined;
+    }
+    const confirmed = await confirmAlert({
+      title: resyncEstimate(total),
+      message: "It pages every bookmark and removes the ones Raindrop no longer has.",
+      primaryAction: { title: "Resync", style: Alert.ActionStyle.Default },
+    });
+    if (confirmed) await sync(true);
+  };
+
+  /** Refresh on open when the store is stale, then the 7-day full-resync reminder. */
+  const afterOpen = async (isLive: () => boolean) => {
+    try {
+      const prefs = getPreferenceValues<Preferences>();
+      const now = Date.now();
+      let times = await syncTimes();
+      if (prefs.refreshOnOpen && isStale(times.lastSync, prefs.refreshAge, now)) {
+        await sync(false);
+        times = await syncTimes();
+      }
+      if (isLive() && fullResyncDue(times.lastFull, times.lastSync, now)) {
+        await showToast({
+          style: Toast.Style.Success,
+          title: "Full resync suggested",
+          message: `Last full resync: ${daysAgo(times.lastFull, now)}`,
+          primaryAction: { title: "Run Full Resync", onAction: () => void sync(true) },
+        });
+      }
+    } catch (error) {
+      if (isLive()) await showFailure(error, { title: "Could not read the sync state", openAccount });
+    }
+  };
 
   // Sign-in state and the store, again after Account changes it.
   useEffect(() => {
@@ -41,7 +129,9 @@ export function SearchView() {
           return;
         }
         await openStore();
-        if (live) setPhase("ready");
+        if (!live) return;
+        setPhase("ready");
+        await afterOpen(() => live);
       } catch (error) {
         if (!live) return;
         setPhase("broken");
@@ -75,10 +165,16 @@ export function SearchView() {
       live = false;
       clearTimeout(timer);
     };
-  }, [phase, text]);
+  }, [phase, text, refresh]);
 
   const accountAction = (
     <Action title="Account" icon={Icon.Person} shortcut={ACCOUNT_KEY} onAction={openAccount} />
+  );
+  const syncActions = (
+    <>
+      <Action title="Sync Now" icon={Icon.ArrowClockwise} shortcut={SYNC_KEY} onAction={() => void sync(false)} />
+      <Action title="Full Resync" icon={Icon.RotateClockwise} shortcut={FULL_RESYNC_KEY} onAction={() => void confirmFullResync()} />
+    </>
   );
 
   if (phase === "signed-out") {
@@ -109,9 +205,14 @@ export function SearchView() {
       {phase === "ready" && !busy && rows.length === 0 && (
         <List.Item
           title={text ? "No bookmark matches" : "No bookmarks yet"}
-          subtitle={text ? undefined : "Run the Sync command to fill the store"}
+          subtitle={text ? undefined : "Press ⌘R to sync the store"}
           icon={Icon.MagnifyingGlass}
-          actions={<ActionPanel>{accountAction}</ActionPanel>}
+          actions={
+            <ActionPanel>
+              {syncActions}
+              {accountAction}
+            </ActionPanel>
+          }
         />
       )}
       {phase === "broken" && (
@@ -147,6 +248,7 @@ export function SearchView() {
                 }}
               />
               <Action.CopyToClipboard title="Copy URL" content={row.link} shortcut={{ modifiers: ["cmd", "shift"], key: "c" }} />
+              {syncActions}
               {accountAction}
             </ActionPanel>
           }

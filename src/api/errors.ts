@@ -3,13 +3,16 @@ export class RaindropApiError extends Error {
   readonly status: number;
   readonly path: string;
   readonly body: string;
+  /** The `X-RateLimit-Reset` header of a 429 reply, so a caller can wait for it. */
+  readonly rateLimitReset: string | undefined;
 
-  constructor(status: number, path: string, body: string) {
+  constructor(status: number, path: string, body: string, rateLimitReset?: string | null) {
     super(RaindropApiError.describe(status, path, body));
     this.name = "RaindropApiError";
     this.status = status;
     this.path = path;
     this.body = body;
+    this.rateLimitReset = rateLimitReset ?? undefined;
   }
 
   /** Raindrop rejected the token: the UI shows "Token rejected" with an action to Account. */

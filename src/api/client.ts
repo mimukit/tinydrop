@@ -100,7 +100,7 @@ export class RaindropClient {
         continue;
       }
       const text = await res.text();
-      if (!res.ok) throw new RaindropApiError(res.status, path, text);
+      if (!res.ok) throw new RaindropApiError(res.status, path, text, res.headers.get("x-ratelimit-reset"));
       if (!text) return undefined as T;
       return JSON.parse(text) as T;
     }

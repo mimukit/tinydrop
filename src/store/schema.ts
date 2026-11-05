@@ -9,7 +9,7 @@ export const SCHEMA_VERSION = 1;
 export const OPENS_VERSION = 1;
 
 /** Tables that mirror the server, dropped on a schema version change. */
-export const MIRROR_TABLES = ["bookmarks", "bookmarks_fts", "highlights", "collections", "tags"] as const;
+export const MIRROR_TABLES = ["bookmarks", "bookmarks_fts", "highlights", "collections", "tags", "sync_seen"] as const;
 
 /** Columns of `bookmarks_fts`, in order. bm25 weights follow the same order. */
 export const FTS_COLUMNS = ["title", "domain", "link", "tags", "note", "excerpt", "highlights"] as const;
@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS collections (
 CREATE TABLE IF NOT EXISTS tags (
   name TEXT PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0
+);
+-- The IDs a full resync has seen so far. It survives a resumed run, so the
+-- delete of the IDs the server no longer has stays right after a restart.
+CREATE TABLE IF NOT EXISTS sync_seen (
+  id INTEGER PRIMARY KEY
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts USING fts5(
   ${FTS_COLUMNS.join(", ")},
