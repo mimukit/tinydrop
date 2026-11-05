@@ -4,18 +4,17 @@
 
 tinydrop is a Raindrop.io extension for the [Tinycast](https://github.com/abue-ammar/tinycast) launcher. It keeps the bookmarks in a local SQLite database, read through the macOS `/usr/bin/sqlite3`, so search never waits on the network. Writes go straight to the Raindrop REST API. It is a Raycast-format extension: a `package.json` manifest plus one CommonJS bundle per command, with `react`, `react/jsx-runtime` and `@raycast/api` left external. Stack: TypeScript, React, esbuild, Vitest. Package manager: pnpm.
 
-The code is not built yet. The v1 plan is [docs/plans/0001-plan-tinydrop-features-2026-11-04.md](docs/plans/0001-plan-tinydrop-features-2026-11-04.md). The build copies its tooling from [tinytick](https://github.com/mimukit/tinytick).
+v1 is built and passes the Linux gate; the check in real Tinycast on macOS is issue #2. The v1 plan is [docs/plans/0001-plan-tinydrop-features-2026-11-04.md](docs/plans/0001-plan-tinydrop-features-2026-11-04.md). The build copies its tooling from [tinytick](https://github.com/mimukit/tinytick).
 
 ## Build and test
-
-These commands exist once Phase 2 of the plan lands.
 
 - `pnpm install`
 - `pnpm typecheck`, `pnpm test`
 - `pnpm build` writes `dist/`
 - `pnpm build:install` builds and copies `dist/` into Tinycast's extensions folder (macOS only)
-- `pnpm smoke <tinycast-checkout>` runs the built bundles in Tinycast's JS runtime against a fake Raindrop server
-- `pnpm bench` seeds 10,000 bookmarks and prints the p50 and p95 query time
+- `pnpm smoke <tinycast-checkout>` runs the built bundles in Tinycast's JS runtime against a fake Raindrop server. `ONLY=<flowName>` runs one flow; each flow is a `flow*` function in `scripts/smoke.mjs`, and a new behavior adds one there
+- `pnpm bench` seeds 10,000 bookmarks and prints the p50 and p95 write and query times
+- `pnpm probe` checks the Phase 1 API facts against the live API; it reads `RAINDROP_TOKEN` from the environment (`set -a; . ./.env; set +a` inside the command)
 
 Store tests call a real `sqlite3` binary and skip with a printed reason when none exists.
 

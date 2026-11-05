@@ -760,6 +760,71 @@ async function flowAddBookmarkForm() {
   return failed;
 }
 
+// ─── Phase 8: one end-to-end run ────────────────────────────────────
+
+/**
+ * Phase 8: one window, one store, one fake server. Sign in from an empty Keychain, sync the
+ * empty store, search, favorite a row, undo it with ⌘Z, then save a bookmark with Quick Add
+ * that Search finds at once. The fake server sees every call in order.
+ */
+async function flowEndToEnd() {
+  return run("search-bookmarks", { keychain: {}, interact: async (ctx) => {
+    // Sign in.
+    assert.deepEqual(rowTitles(ctx), ["Sign in with a Raindrop test token"], "the sign-in row");
+    await press(ctx, "Open Account");
+    await press(ctx, "Enter Test Token");
+    await setField(ctx, "Form.PasswordField", "token", "new-token");
+    await press(ctx, "Save Token", 900);
+    assert.equal(ctx.keychain["test-token"], "new-token", "the token is in the Keychain");
+    await waitFor(() => rowTitles(ctx).includes("Test User"), "the account name");
+    ctx.harness.call('__tinycast.popNavigation("s1")');
+    await sleep(500);
+    await waitFor(() => rowTitles(ctx).includes("No bookmarks yet"), "Search, signed in, with an empty store");
+    const afterSignIn = ctx.calls.length;
+    assert.ok(ctx.calls.every((c) => c === "GET /user"), `sign-in calls only GET /user: ${ctx.calls}`);
+
+    // Sync: the first one is a full one.
+    await press(ctx, "Sync Now", 100);
+    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes"), "the first sync summary");
+    await waitFor(() => rowTitles(ctx).length === 3, "the three synced rows");
+    assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
+    const syncCalls = decoded(ctx.calls.slice(afterSignIn));
+    assert.ok(syncCalls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the sync pages the server: ${syncCalls}`);
+    assert.ok(syncCalls.every((c) => c.startsWith("GET ")), `the sync only reads: ${syncCalls}`);
+
+    // Search.
+    await typeSearch(ctx, "rust owner");
+    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "search finds the row");
+    const afterSync = ctx.calls.length;
+
+    // One row write, then ⌘Z.
+    assert.ok(rowActions(ctx).includes("Add to Favorites cmd+f"), `⌘F on the row: ${rowActions(ctx)}`);
+    await press(ctx, "Add to Favorites", 100);
+    await waitCalls(ctx, afterSync + 1);
+    assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `⌘Z after the write: ${rowActions(ctx)}`);
+    await pressPrefix(ctx, "Undo", 100);
+    await waitCalls(ctx, afterSync + 2);
+    await sleep(200);
+    assert.deepEqual(ctx.calls.slice(afterSync), [
+      'PUT /raindrop/101 {"important":true}',
+      'PUT /raindrop/101 {"important":false}',
+    ], "the write, then the reverting write");
+    assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after the undo");
+    assert.equal((await storeOf(ctx).getBookmark(101))?.important, false, "the store row is back");
+
+    // Quick Add, then Search finds the new bookmark.
+    await press(ctx, "Quick Add", 400);
+    await typeSearch(ctx, "https://example.com #read ~Dev !fav");
+    await press(ctx, "Save Bookmark", 100);
+    await waitCalls(ctx, afterSync + 3);
+    await sleep(600);
+    assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "one POST");
+    await typeSearch(ctx, "example domain");
+    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the Quick Add bookmark");
+    assert.equal(ctx.calls.length, afterSync + 3, `no other request: ${ctx.calls.slice(afterSync)}`);
+  }});
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -767,6 +832,7 @@ const FLOWS_ALL = [
   flowSearchOperators, flowDetailsPanel, flowOpenAndCopy,
   flowRowWritesAndUndo, flowEditAndTags,
   flowQuickAddFromSearch, flowQuickAddUnknownCollection, flowQuickAddDuplicate, flowAddBookmarkForm,
+  flowEndToEnd,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;
