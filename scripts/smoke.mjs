@@ -69,6 +69,8 @@ const SYNCED_MARK = "2026-11-01T12:00:00.000Z";
 const GOOD_TOKENS = new Set(["tok", "new-token"]);
 
 function fakeRaindrop(calls) {
+  // Each run gets its own copy of the server bookmarks, so a PUT reply carries the earlier writes.
+  const items = new Map(SERVER_BOOKMARKS.map((b) => [b._id, structuredClone(b)]));
   return async ([spec]) => {
     const url = new URL(spec.url);
     url.searchParams.delete("_");
@@ -96,12 +98,23 @@ function fakeRaindrop(calls) {
     if (p === "/collections") return reply(200, { result: true, items: COLLECTIONS });
     if (p === "/collections/childrens") return reply(200, { result: true, items: CHILDREN });
     if (p === "/tags/0") return reply(200, { result: true, items: [{ _id: "rust", count: 1 }, { _id: "read", count: 1 }] });
-    if (p === "/raindrop" && spec.method === "POST") return reply(200, { result: true, item: { _id: 900, collection: { $id: -1 }, ...body } });
+    if (p === "/raindrop" && spec.method === "POST") {
+      // As pleaseParse would: a title and a domain from the page.
+      const { pleaseParse: _parse, ...fields } = body ?? {};
+      const host = (() => { try { return new URL(fields.link).hostname; } catch { return ""; } })();
+      return reply(200, { result: true, item: {
+        _id: 900, collection: { $id: -1 }, type: "link", created: "2026-11-05T00:00:00.000Z", lastUpdate: "2026-11-05T00:00:00.000Z",
+        ...fields, title: fields.title || "Example Domain", domain: host,
+      } });
+    }
     const one = p.match(/^\/raindrop\/(\d+)$/);
     if (one) {
-      const found = BOOKMARKS.find((b) => b._id === Number(one[1]));
+      const found = items.get(Number(one[1]));
       if (!found) return reply(404, { result: false });
-      if (spec.method === "PUT") return reply(200, { result: true, item: { ...found, ...body } });
+      if (spec.method === "PUT") {
+        Object.assign(found, body);
+        return reply(200, { result: true, item: found });
+      }
       if (spec.method === "DELETE") return reply(200, { result: true });
       return reply(200, { result: true, item: found });
     }
@@ -187,7 +200,7 @@ const tempDirs = [];
  * Runs one command in a fresh harness. `keychain` is the starting Keychain,
  * `interact` drives the screen. Returns the failure count.
  */
-async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, interact } = {}) {
+async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, clipboard = "", interact } = {}) {
   const cmd = manifest.commands.find((c) => c.name === commandName);
   assert.ok(cmd, `command ${commandName} is in the manifest`);
   const supportPath = await supportDir({ seed });
@@ -208,6 +221,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
       "storage.remove": (a) => { delete storage[a[0]]; return null; },
       "system.open": (a) => { opened.push(a[0]); return null; },
       "clipboard.copy": (a) => { copied.push(a[0]); return null; },
+      "clipboard.readText": () => clipboard,
     },
   });
   fakeKeychain(harness, keychain);
@@ -361,14 +375,6 @@ async function flowSignOut() {
     assert.equal(ctx.keychain["test-token"], undefined, "the token is gone");
     assert.equal(existsSync(join(ctx.supportPath, DB_FILE)), false, "the database file is gone");
   }});
-}
-
-/** Phase 2: the placeholder commands start with no runtime failure. */
-async function flowPlaceholders() {
-  let failed = 0;
-  failed += await run("add-bookmark", { interact: async (ctx) => assert.ok(ctx.tree(), "Add Bookmark renders") });
-  failed += await run("quick-add", { args: { text: "https://example.com #read" }, interact: async (ctx) => assert.ok(ctx.tree(), "Quick Add renders") });
-  return failed;
 }
 
 /** Phase 4: the Sync command on a store that synced before: one change page, the Trash search, a HUD with the counts. */
@@ -567,11 +573,200 @@ async function flowOpenAndCopy() {
   }});
 }
 
+// ─── Phase 6: row actions and undo ──────────────────────────────────
+
+/** Presses the action whose title starts with `prefix`, such as "Undo". */
+async function pressPrefix(ctx, prefix, wait = 300) {
+  const a = findAll(ctx.tree(), (n) => typeof n.props?.title === "string" && n.props.title.startsWith(prefix) && n.props?.onAction?.$fn)[0];
+  assert.ok(a, `an action starting with "${prefix}"`);
+  ctx.harness.dispatch("s1", a.props.onAction.$fn, []);
+  await sleep(wait);
+}
+
+const hasActionPrefix = (ctx, prefix) =>
+  findAll(ctx.tree(), (n) => typeof n.props?.title === "string" && n.props.title.startsWith(prefix) && n.props?.onAction?.$fn).length > 0;
+
+/** Waits until the fake server has `n` calls. */
+const waitCalls = (ctx, n) => waitFor(() => ctx.calls.length >= n, `${n} API call(s): ${ctx.calls}`);
+
+/**
+ * Phase 6: favorite, move and delete three bookmarks, then ⌘Z three times. The fake server gets
+ * the three writes and the three reverting writes, in order, and the store is back as it was.
+ */
+async function flowRowWritesAndUndo() {
+  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+    const actions = rowActions(ctx);
+    for (const want of ["Edit Bookmark cmd+e", "Move to Collection… cmd+m", "Toggle Tag… cmd+t", "Move to Trash cmd+backspace", "Add Bookmark cmd+n", "Quick Add cmd+shift+n"]) {
+      assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+    }
+    assert.ok(actions.some((a) => / cmd\+f$/.test(a) && /Favorites/.test(a)), `a ⌘F favorite action: ${actions}`);
+    assert.ok(!actions.some((a) => a.startsWith("Undo")), "no Undo before a write");
+
+    await typeSearch(ctx, "rust ownership");
+    await press(ctx, "Add to Favorites", 100);
+    await waitCalls(ctx, 1);
+    assert.ok(hasActionPrefix(ctx, "Undo"), "⌘Z shows once the stack has an entry");
+    assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `the Undo action and key: ${rowActions(ctx)}`);
+
+    await typeSearch(ctx, "pasta");
+    await press(ctx, "Move to Collection…", 300);
+    await setField(ctx, "Form.Dropdown", "choice", "11");
+    await waitCalls(ctx, 2);
+
+    await typeSearch(ctx, "zig");
+    await press(ctx, "Move to Trash", 100);
+    await waitCalls(ctx, 3);
+    await waitFor(() => rowTitles(ctx)[0] === "No bookmark matches", "the trashed row leaves the list");
+
+    for (let i = 0; i < 3; i++) {
+      await pressPrefix(ctx, "Undo", 100);
+      await waitCalls(ctx, 4 + i);
+    }
+    await sleep(300);
+    assert.deepEqual(ctx.calls, [
+      'PUT /raindrop/101 {"important":true}',
+      'PUT /raindrop/102 {"collection":{"$id":11}}',
+      "DELETE /raindrop/103",
+      'PUT /raindrop/103 {"collection":{"$id":11}}',
+      'PUT /raindrop/102 {"collection":{"$id":-1}}',
+      'PUT /raindrop/101 {"important":false}',
+    ], "three writes, then three reverting writes in reverse order");
+    assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after three undos");
+    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the restored row is back in the list");
+    const store = storeOf(ctx);
+    assert.equal((await store.getBookmark(101))?.important, false, "101 is not a favorite again");
+    assert.deepEqual((await store.getBookmark(101))?.highlights.map((h) => h.text), ["borrow checker"], "the reply keeps the highlight");
+    assert.equal((await store.getBookmark(102))?.collectionId, -1, "102 is back in Unsorted");
+    assert.equal((await store.getBookmark(103))?.collectionId, 11, "103 is back in Dev");
+    const titles = ctx.toasts.map((t) => t.title);
+    for (const want of ["Added to favorites", "Moved to Dev", "Moved to Trash", "Undone: Delete"]) assert.ok(titles.includes(want), `toast "${want}": ${titles}`);
+  }});
+}
+
+/** Phase 6: ⌘E sends only the changed field; ⌘T toggles a tag off; ⌘Z puts it back. */
+async function flowEditAndTags() {
+  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
+    await typeSearch(ctx, "rust ownership");
+    await press(ctx, "Edit Bookmark", 300);
+    const link = findAll(ctx.tree(), (n) => n.type === "Form.TextField" && n.props.id === "link")[0];
+    assert.equal(link?.props.value, "https://doc.rust-lang.org/book/", "the form holds the link");
+    await setField(ctx, "Form.TextField", "title", "The Rust book");
+    await press(ctx, "Save Changes", 100);
+    await waitCalls(ctx, 1);
+    await typeSearch(ctx, "rust book");
+    await press(ctx, "Toggle Tag…", 300);
+    await setField(ctx, "Form.Dropdown", "choice", "read");
+    await waitCalls(ctx, 2);
+    await pressPrefix(ctx, "Undo Tags", 100);
+    await waitCalls(ctx, 3);
+    await sleep(200);
+    assert.deepEqual(ctx.calls, [
+      'PUT /raindrop/101 {"title":"The Rust book"}',
+      'PUT /raindrop/101 {"tags":["rust"]}',
+      'PUT /raindrop/101 {"tags":["rust","read"]}',
+    ], "only the changed fields");
+    assert.equal((await storeOf(ctx).getBookmark(101))?.title, "The Rust book", "the store holds the new title");
+  }});
+}
+
+// ─── Phase 7: Add Bookmark and Quick Add ────────────────────────────
+
+const posts = (ctx) => ctx.calls.filter((c) => c.startsWith("POST /raindrop ")).map((c) => JSON.parse(c.slice("POST /raindrop ".length)));
+
+/** Phase 7: ⌘⇧N from Search; one POST with the collection, tag and favorite; Search finds the row at once. */
+async function flowQuickAddFromSearch() {
+  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+    await press(ctx, "Quick Add", 400);
+    await typeSearch(ctx, "https://example.com #read ~Dev !fav");
+    const preview = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.id === "preview")[0];
+    assert.ok(preview, "the live preview row");
+    assert.equal(preview.props.title, "Title from the page", "an empty title is left to pleaseParse");
+    const acc = JSON.stringify(preview.props.accessories);
+    assert.ok(acc.includes('"Dev"') && acc.includes("#read"), `collection and tag in the preview: ${acc}`);
+    await typeSearch(ctx, "https://example.com #read !fav ~D");
+    assert.ok(rowTitles(ctx).includes("~Dev"), `collection autocomplete: ${rowTitles(ctx)}`);
+    await press(ctx, "Insert", 300);
+    assert.equal(findAll(ctx.tree(), (n) => n.type === "List" && n.props?.onSearchTextChange?.$fn).at(-1).props.searchText, "https://example.com #read !fav ~Dev ", "Insert completes the name");
+    await press(ctx, "Save Bookmark", 100);
+    await waitCalls(ctx, 1);
+    await sleep(600);
+    assert.equal(ctx.calls.length, 1, `one request: ${ctx.calls}`);
+    assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "the POST body");
+    await typeSearch(ctx, "example domain");
+    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the new row before any sync");
+    assert.equal(ctx.calls.length, 1, "no sync ran");
+    assert.equal((await storeOf(ctx).getBookmark(900))?.collectionId, 11, "the reply is in the store");
+  }});
+}
+
+/** Phase 7: an unknown ~collection shows an error row and sends no request. */
+async function flowQuickAddUnknownCollection() {
+  return run("quick-add", { seed: searchSeed(), args: { text: "https://example.com ~Nope" }, interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).includes('No collection named "Nope"'), "the error row");
+    await press(ctx, "Save Bookmark", 400);
+    assert.ok(ctx.toasts.some((t) => t.title === 'No collection named "Nope"'), `an error toast: ${JSON.stringify(ctx.toasts)}`);
+    assert.equal(ctx.calls.length, 0, `no request: ${ctx.calls}`);
+  }});
+}
+
+/** Phase 7: a duplicate shows "Already saved in"; the first ↵ warns, the second saves. The clipboard URL fills an empty line. */
+async function flowQuickAddDuplicate() {
+  let failed = await run("quick-add", { seed: searchSeed(), args: { text: "https://EXAMPLE.com/pasta/?utm_source=x Pasta again" }, interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).includes("Already saved in Unsorted"), "the duplicate row");
+    await press(ctx, "Save Bookmark", 400);
+    assert.equal(ctx.calls.length, 0, "the first ↵ only warns");
+    await press(ctx, "Save Bookmark", 100);
+    await waitCalls(ctx, 1);
+    assert.equal(posts(ctx)[0].collection.$id, -1, "no ~ means Unsorted");
+    assert.equal(posts(ctx)[0].title, "Pasta again");
+    await waitFor(() => huds(ctx).length > 0, "the HUD");
+  }});
+  failed += await run("quick-add", { seed: searchSeed(), clipboard: "https://news.example.org/a", interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).includes("Title from the page"), "the preview");
+    const preview = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.id === "preview")[0];
+    assert.equal(preview.props.subtitle, "https://news.example.org/a (clipboard)", "the clipboard URL");
+  }});
+  return failed;
+}
+
+/** Phase 7: the Add Bookmark command: clipboard URL, last collection, duplicate warning, pleaseParse. */
+async function flowAddBookmarkForm() {
+  let failed = await run("add-bookmark", { seed: searchSeed(), clipboard: "https://example.com/new", storage: { lastCollection: "12" }, interact: async (ctx) => {
+    await sleep(300);
+    const field = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0];
+    assert.equal(field("Form.TextField", "link")?.props.value, "https://example.com/new", "the clipboard URL");
+    assert.equal(field("Form.Dropdown", "collection")?.props.value, "12", "the last used collection");
+    await setField(ctx, "Form.Dropdown", "collection", "11");
+    await setField(ctx, "Form.TextField", "title", "New page");
+    await setField(ctx, "Form.TextField", "newTags", "later, #read");
+    await press(ctx, "Save Bookmark", 100);
+    await waitCalls(ctx, 1);
+    assert.deepEqual(posts(ctx), [{ link: "https://example.com/new", collection: { $id: 11 }, pleaseParse: {}, title: "New page", tags: ["later", "read"] }], "the POST body");
+    await waitFor(() => huds(ctx).length > 0, "the HUD");
+    assert.equal(ctx.storage.lastCollection, "11", "the collection is kept");
+  }});
+  failed += await run("add-bookmark", { seed: searchSeed(), clipboard: "https://ziglang.org/comptime/", interact: async (ctx) => {
+    await sleep(300);
+    const desc = findAll(ctx.tree(), (n) => n.type === "Form.Description")[0];
+    assert.equal(desc?.props.text, "Already saved in Dev", "the duplicate warning");
+    await press(ctx, "Save Bookmark", 400);
+    assert.equal(ctx.calls.length, 0, "the first submit only warns");
+    await press(ctx, "Save Bookmark", 100);
+    await waitCalls(ctx, 1);
+    assert.equal(posts(ctx)[0].collection.$id, -1, "Unsorted with no stored collection");
+  }});
+  return failed;
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
-  flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut, flowPlaceholders,
+  flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
   flowSyncCommand, flowSyncFirstAndRejected, flowSearchSync, flowFullResync, flowResyncReminder, flowRefreshOnOpen, flowSearchSyncRejected,
   flowSearchOperators, flowDetailsPanel, flowOpenAndCopy,
+  flowRowWritesAndUndo, flowEditAndTags,
+  flowQuickAddFromSearch, flowQuickAddUnknownCollection, flowQuickAddDuplicate, flowAddBookmarkForm,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

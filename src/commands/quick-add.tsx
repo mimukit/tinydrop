@@ -1,12 +1,7 @@
-// Placeholder. Phase 7 builds Quick Add with the live preview.
-import { Detail, type LaunchProps } from "@raycast/api";
+// Quick Add: the `text` argument fills the search bar.
+import type { LaunchProps } from "@raycast/api";
+import { QuickAddView } from "../components/QuickAddView";
 
 export default function Command(props: LaunchProps<{ arguments: { text?: string } }>) {
-  const text = props.arguments?.text ?? "";
-  return (
-    <Detail
-      navigationTitle="Quick Add"
-      markdown={`# Quick Add\n\nQuick Add is not built yet.${text ? `\n\nText: \`${text.replace(/`/g, "'")}\`` : ""}`}
-    />
-  );
+  return <QuickAddView initialText={props.arguments?.text ?? ""} />;
 }

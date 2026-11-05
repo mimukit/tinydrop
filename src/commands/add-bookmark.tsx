@@ -1,6 +1,6 @@
-// Placeholder. Phase 7 builds the Add Bookmark form.
-import { Detail } from "@raycast/api";
+// Add Bookmark: the form, with the clipboard URL and the last used collection.
+import { AddBookmarkForm } from "../components/AddBookmarkForm";
 
 export default function Command() {
-  return <Detail navigationTitle="Add Bookmark" markdown="# Add Bookmark\n\nThe Add Bookmark form is not built yet." />;
+  return <AddBookmarkForm />;
 }

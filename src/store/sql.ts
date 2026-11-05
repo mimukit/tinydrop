@@ -97,7 +97,8 @@ function tagExists(tag: string): string {
  */
 export function compileSearch(query: SearchQuery): string {
   const match = ftsMatch(query);
-  const where: string[] = [];
+  // A row deleted from a window waits in Trash (-99) until the next sync drops it.
+  const where: string[] = ["b.collection_id <> -99"];
   if (match) where.push(`bookmarks_fts MATCH ${sqlString(match)}`);
   const excludes = clean(query.excludes);
   if (excludes.length > 0) {
@@ -122,6 +123,7 @@ export function compileSearch(query: SearchQuery): string {
   const order = match ? `round(${bm25}, 1), open_count DESC, ${bm25}, b.created DESC` : OPENED_ORDER;
   return `SELECT ${BOOKMARK_COLUMNS}
 FROM ${from}
-${where.length > 0 ? `WHERE ${where.join("\n  AND ")}\n` : ""}ORDER BY ${order}
+WHERE ${where.join("\n  AND ")}
+ORDER BY ${order}
 LIMIT ${limit};`;
 }

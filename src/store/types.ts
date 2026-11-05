@@ -84,6 +84,14 @@ export interface BookmarkStore {
   topOpened(limit?: number): Promise<BookmarkRow[]>;
   getBookmark(id: number): Promise<BookmarkRow | undefined>;
   /**
+   * Writes a row's own fields (link, title, domain, collection, tags, note, favorite) and its FTS
+   * row, before the server answers a write or after a write fails. Highlights stay as they are.
+   * A row that is not in the store stays out.
+   */
+  saveRow(row: BookmarkRow): Promise<void>;
+  /** The bookmarks whose domain or link holds `host` (lowercase), not in Trash, for the duplicate check. */
+  findByHost(host: string): Promise<BookmarkRow[]>;
+  /**
    * Inserts or updates one page of API bookmarks, with highlights and the FTS row, in one transaction.
    * The same transaction marks the IDs as seen by a full resync and writes `syncState`, when given.
    */

@@ -1,7 +1,8 @@
 // Search Bookmarks. Reads only the store: the operators of src/search/, the
 // collection dropdown, type icons, the details panel (⌘I), open (counts an open),
 // copy URL and Markdown link, the Raindrop web app. Sync: ⌘R, ⌘⇧R after a
-// confirmation, refresh on open, and the 7-day reminder.
+// confirmation, refresh on open, and the 7-day reminder. Row writes: ⌘E edit,
+// ⌘M move, ⌘T tags, ⌘F favorite, ⌘⌫ Trash, ⌘Z undo; ⌘N Add Bookmark, ⌘⇧N Quick Add.
 import {
   Action,
   ActionPanel,
@@ -19,17 +20,24 @@ import {
   type Keyboard,
 } from "@raycast/api";
 import { useEffect, useRef, useState } from "react";
+import { UNSORTED_COLLECTION } from "../api/types";
 import { getAuth } from "../auth/secrets";
 import type { RaindropType } from "../api/types";
 import { ALL_VALUE, buildQuery, collectionChoices, collectionPath } from "../search/collections";
 import { detailMarkdown, markdownLink, shortDate, syncAgo, tagText, webAppUrl } from "../search/format";
 import { isEmptySearch, parseSearch } from "../search/parse";
-import type { BookmarkRow, CollectionRow } from "../store/types";
+import type { BookmarkRow, CollectionRow, TagRow } from "../store/types";
+import type { BookmarkWriter } from "../write/writer";
 import { daysAgo, fullResyncDue, isStale, progressText, resyncEstimate, syncSummary, type RefreshAge } from "../sync/text";
 import { AccountView } from "./AccountView";
+import { AddBookmarkForm } from "./AddBookmarkForm";
+import { EditBookmarkForm } from "./EditBookmarkForm";
+import { Picker } from "./Picker";
+import { QuickAddView } from "./QuickAddView";
 import { showFailure } from "./failure";
 import { openStore } from "./store";
 import { syncNow, syncTimes } from "./sync";
+import { newWriter, undoneMessage } from "./writer";
 
 const SEARCH_WAIT_MS = 100;
 const ACCOUNT_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "a" };
@@ -39,6 +47,14 @@ const DETAIL_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "i" };
 const WEB_APP_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "o" };
 const COPY_URL_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "c" };
 const COPY_LINK_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "l" };
+const EDIT_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "e" };
+const MOVE_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "m" };
+const TAGS_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "t" };
+const FAVORITE_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "f" };
+const TRASH_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "backspace" };
+const UNDO_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "z" };
+const ADD_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "n" };
+const QUICK_ADD_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "n" };
 /** LocalStorage key of the details panel state: "1" open, "0" closed. */
 export const DETAIL_STORAGE_KEY = "showDetail";
 
@@ -71,9 +87,24 @@ export function SearchView() {
   const [lastSync, setLastSync] = useState<number | undefined>(undefined);
   const [showDetail, setShowDetail] = useState(false);
   const [queryError, setQueryError] = useState<string | undefined>(undefined);
+  const [tags, setTags] = useState<TagRow[]>([]);
+  const [requery, setRequery] = useState(0);
+  const [undoSize, setUndoSize] = useState(0);
+  const [undoLabel, setUndoLabel] = useState<string | undefined>(undefined);
   const syncing = useRef(false);
 
   const openAccount = () => push(<AccountView onChange={() => setGeneration((g) => g + 1)} />);
+
+  // One writer per window: its undo stack ends when the window closes.
+  const writerRef = useRef<BookmarkWriter | undefined>(undefined);
+  const writer = (writerRef.current ??= newWriter({
+    onChange: () => {
+      setUndoSize(writerRef.current?.undo.size ?? 0);
+      setUndoLabel(writerRef.current?.undo.peek()?.label);
+      setRequery((r) => r + 1);
+    },
+    openAccount,
+  }));
 
   /** Runs a sync with a progress toast, then queries the store again. */
   const sync = async (full: boolean) => {
@@ -186,9 +217,10 @@ export function SearchView() {
     (async () => {
       try {
         const store = await openStore();
-        const [found, times] = await Promise.all([store.collections(), syncTimes()]);
+        const [found, times, foundTags] = await Promise.all([store.collections(), syncTimes(), store.tags()]);
         if (!live) return;
         setCollections(found);
+        setTags(foundTags);
         setLastSync(times.lastSync);
       } catch (error) {
         if (!live) return;
@@ -236,7 +268,7 @@ export function SearchView() {
       live = false;
       clearTimeout(timer);
     };
-  }, [phase, text, dropdown, collections, refresh]);
+  }, [phase, text, dropdown, collections, refresh, requery]);
 
   /** ↵: open in the default browser and count the open. */
   const openRow = async (row: BookmarkRow) => {
@@ -270,6 +302,121 @@ export function SearchView() {
         </List.Item.Detail.Metadata>
       }
     />
+  );
+
+  const afterAdd = () => {
+    setRequery((r) => r + 1);
+    setRefresh((r) => r + 1);
+  };
+  const undoAction =
+    undoSize > 0 ? (
+      <Action
+        title={`Undo ${undoLabel ?? ""}`.trim()}
+        icon={Icon.Undo}
+        shortcut={UNDO_KEY}
+        onAction={() => void writer.undoLast({ message: undoneMessage })}
+      />
+    ) : null;
+  const addActions = (
+    <>
+      <Action
+        title="Add Bookmark"
+        icon={Icon.Plus}
+        shortcut={ADD_KEY}
+        onAction={() => push(<AddBookmarkForm writer={writer} onSaved={afterAdd} />)}
+      />
+      <Action
+        title="Quick Add"
+        icon={Icon.PlusCircle}
+        shortcut={QUICK_ADD_KEY}
+        onAction={() => push(<QuickAddView writer={writer} onSaved={afterAdd} />)}
+      />
+    </>
+  );
+
+  const moveChoices = collectionChoices(collections ?? []).filter((c) => c.value !== ALL_VALUE);
+  const tagNames = (row: BookmarkRow) => [...new Set([...tags.map((t) => t.name), ...row.tags])];
+
+  const rowWriteActions = (row: BookmarkRow) => (
+    <ActionPanel.Section title="Bookmark">
+      <Action
+        title="Edit Bookmark"
+        icon={Icon.Pencil}
+        shortcut={EDIT_KEY}
+        onAction={() =>
+          push(
+            <EditBookmarkForm
+              row={row}
+              collections={collections ?? []}
+              tags={tags}
+              onSubmit={(patch) => writer.update(row, patch, { label: "Edit", message: "Bookmark updated" })}
+            />,
+          )
+        }
+      />
+      <Action.Push
+        title="Move to Collection…"
+        icon={Icon.Folder}
+        shortcut={MOVE_KEY}
+        target={
+          <Picker
+            title="Move to Collection"
+            options={moveChoices.map((c) => ({
+              id: c.value,
+              title: c.title,
+              icon: Number(c.value) === UNSORTED_COLLECTION ? Icon.Tray : Icon.Folder,
+              selected: c.value === String(row.collectionId),
+              onPick: () => writer.move(row, Number(c.value), { label: "Move", message: `Moved to ${c.title}` }),
+            }))}
+          />
+        }
+      />
+      <Action.Push
+        title="Toggle Tag…"
+        icon={Icon.Tag}
+        shortcut={TAGS_KEY}
+        target={
+          <Picker
+            title="Toggle Tag"
+            options={tagNames(row).map((name) => {
+              const has = row.tags.includes(name);
+              return {
+                id: name,
+                title: `#${name}`,
+                // Not `selected`: picking a tag the bookmark has removes it.
+                icon: has ? Icon.Checkmark : Icon.Circle,
+                onPick: () =>
+                  writer.update(
+                    row,
+                    { tags: has ? row.tags.filter((t) => t !== name) : [...row.tags, name] },
+                    { label: "Tags", message: has ? `Removed #${name}` : `Added #${name}` },
+                  ),
+              };
+            })}
+          />
+        }
+      />
+      <Action
+        title={row.important ? "Remove from Favorites" : "Add to Favorites"}
+        icon={Icon.Star}
+        shortcut={FAVORITE_KEY}
+        onAction={() =>
+          void writer.update(
+            row,
+            { important: !row.important },
+            { label: "Favorite", message: row.important ? "Removed from favorites" : "Added to favorites" },
+          )
+        }
+      />
+      <Action
+        title="Move to Trash"
+        icon={Icon.Trash}
+        style={Action.Style.Destructive}
+        shortcut={TRASH_KEY}
+        onAction={() => void writer.trash(row, { label: "Delete", message: "Moved to Trash" })}
+      />
+      {undoAction}
+    </ActionPanel.Section>
   );
 
   const accountAction = (
@@ -333,6 +480,8 @@ export function SearchView() {
           icon={{ source: Icon.Warning, tintColor: Color.Orange }}
           actions={
             <ActionPanel>
+              {undoAction}
+              {addActions}
               {syncActions}
               {accountAction}
             </ActionPanel>
@@ -346,6 +495,8 @@ export function SearchView() {
           icon={Icon.MagnifyingGlass}
           actions={
             <ActionPanel>
+              {undoAction}
+              {addActions}
               {syncActions}
               {accountAction}
             </ActionPanel>
@@ -390,7 +541,9 @@ export function SearchView() {
                   shortcut={COPY_LINK_KEY}
                 />
               </ActionPanel.Section>
+              {rowWriteActions(row)}
               <ActionPanel.Section>
+                {addActions}
                 {syncActions}
                 {accountAction}
               </ActionPanel.Section>

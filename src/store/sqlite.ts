@@ -23,6 +23,8 @@ import {
 export const DEFAULT_SQLITE3 = "/usr/bin/sqlite3";
 export const DB_FILE = "tinydrop.sqlite";
 const TIMEOUT = [".timeout 2000"];
+/** Trash. A row deleted from a window stays in the store with this collection until a sync drops it, so undo keeps its opens and highlights. */
+const TRASH_ID = -99;
 const TYPES: RaindropType[] = ["link", "article", "image", "video", "document", "audio"];
 
 export interface SqliteStoreOptions {
@@ -267,6 +269,45 @@ export class SqliteStore implements BookmarkStore {
     const rows = await this.read(`SELECT ${BOOKMARK_COLUMNS}
 FROM bookmarks b LEFT JOIN opens o ON o.bookmark_id = b.id WHERE b.id = ${sqlInt(id)};`);
     return rows[0] ? toBookmark(rows[0]) : undefined;
+  }
+
+  async saveRow(row: BookmarkRow): Promise<void> {
+    const id = sqlInt(row.id);
+    const highlights = row.highlights.flatMap((h) => [h.text, h.note ?? ""]).filter(Boolean).join("\n");
+    await this.write(
+      [
+        `UPDATE bookmarks SET ${[
+          `link = ${sqlString(row.link)}`,
+          `title = ${sqlString(row.title)}`,
+          `domain = ${sqlString(row.domain)}`,
+          `collection_id = ${sqlInt(row.collectionId)}`,
+          `tags = ${sqlString(JSON.stringify(row.tags))}`,
+          `note = ${sqlString(row.note)}`,
+          `important = ${sqlBool(row.important)}`,
+        ].join(", ")} WHERE id = ${id};`,
+        `DELETE FROM bookmarks_fts WHERE rowid = ${id};`,
+        `INSERT INTO bookmarks_fts (rowid, ${FTS_COLUMNS.join(", ")}) SELECT ${[
+          id,
+          sqlString(row.title),
+          sqlString(row.domain),
+          sqlString(row.link),
+          sqlString(row.tags.join(" ")),
+          sqlString(row.note),
+          sqlString(row.excerpt),
+          sqlString(highlights),
+        ].join(", ")} WHERE EXISTS (SELECT 1 FROM bookmarks WHERE id = ${id});`,
+      ].join("\n"),
+    );
+  }
+
+  async findByHost(host: string): Promise<BookmarkRow[]> {
+    const want = host.trim().toLowerCase();
+    if (!want) return [];
+    const rows = await this.read(`SELECT ${BOOKMARK_COLUMNS}
+FROM bookmarks b LEFT JOIN opens o ON o.bookmark_id = b.id
+WHERE b.collection_id <> ${sqlInt(TRASH_ID)} AND (lower(b.domain) = ${sqlString(want)} OR instr(lower(b.link), ${sqlString(want)}) > 0)
+LIMIT 500;`);
+    return rows.map(toBookmark);
   }
 
   async upsertPage(items: Raindrop[], options: UpsertOptions = {}): Promise<void> {
