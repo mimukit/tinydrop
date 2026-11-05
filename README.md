@@ -73,7 +73,7 @@ Type `#` to show up to ten stored tags. Type more letters to narrow the suggesti
 
 The form selects the last saved collection if it still exists. Otherwise, it selects Bookmarks. If Bookmarks does not exist, it selects Unsorted.
 
-Use the Tags field for existing and new names. Separate names with commas. Matching tags appear below the field and in Actions. Select an Insert action to complete a name. Names without an existing match create tags when you save.
+Use the Tags picker to search and select existing tags. To add a new name, select Create Tag from Actions. Enter the name and select Add Tag to Bookmark. The new tag joins the selected tags. Raindrop receives it only when you save the bookmark.
 
 ### Page details
 

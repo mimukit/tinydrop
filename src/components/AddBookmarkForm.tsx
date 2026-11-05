@@ -21,7 +21,8 @@ import { RaindropClient } from "../api/client";
 import { getAuth } from "../auth/secrets";
 import { UNSORTED_COLLECTION, type RaindropPatch } from "../api/types";
 import { duplicateText, findDuplicate, httpUrl, normalizeLink, type Duplicate } from "../parse/link";
-import { defaultCollection, formTags, formTagSuggestions } from "../parse/add-form";
+import { defaultCollection } from "../parse/add-form";
+import { mergeTags } from "../parse/tags";
 import { ALL_VALUE, collectionChoices } from "../search/collections";
 import type { CollectionRow, TagRow } from "../store/types";
 import type { BookmarkWriter } from "../write/writer";
@@ -38,12 +39,12 @@ interface Values {
   excerpt: string;
   note: string;
   collection: string;
-  tags: string;
+  tags: string[];
   important: boolean;
 }
 
 export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; onSaved?: () => void }) {
-  const { pop } = useNavigation();
+  const { pop, push } = useNavigation();
   const [link, setLink] = useState("");
   const [title, setTitle] = useState("");
   const [excerpt, setExcerpt] = useState("");
@@ -57,7 +58,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
   const [collection, setCollection] = useState(String(UNSORTED_COLLECTION));
   const [collections, setCollections] = useState<CollectionRow[]>([]);
   const [tags, setTags] = useState<TagRow[]>([]);
-  const [tagText, setTagText] = useState("");
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [duplicate, setDuplicate] = useState<Duplicate | undefined>(undefined);
   const [warnedFor, setWarnedFor] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(true);
@@ -158,7 +159,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
     if (values.title?.trim()) patch.title = values.title.trim();
     if (values.excerpt?.trim()) patch.excerpt = values.excerpt.trim();
     if (values.note?.trim()) patch.note = values.note;
-    const allTags = formTags(values.tags ?? tagText, tags.map((tag) => tag.name));
+    const allTags = mergeTags(values.tags ?? selectedTags, "");
     if (allTags.length) patch.tags = allTags;
     if (values.important) patch.important = true;
     setBusy(true);
@@ -180,7 +181,12 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
 
   const choices = collectionChoices(collections).filter((c) => c.value !== ALL_VALUE);
   const tagNames = tags.map((t) => t.name);
-  const suggestions = formTagSuggestions(tagText, tagNames);
+  const createTag = (name: string) => {
+    const existing = tagNames.find((tag) => tag.toLowerCase() === name.toLowerCase());
+    const value = existing ?? name;
+    if (!existing) setTags((current) => [...current, { name: value, count: 0 }]);
+    setSelectedTags((current) => mergeTags([...current, value], ""));
+  };
 
   return (
     <Form
@@ -190,13 +196,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
         <ActionPanel>
           <Action.SubmitForm title="Save Bookmark" icon={Icon.Plus} onSubmit={(v: Values) => void submit(v)} />
           <Action title="Fetch Page Details" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => void fetchDetails()} />
-          {suggestions.length > 0 && (
-            <ActionPanel.Section title="Matching Tags">
-              {suggestions.map((suggestion) => (
-                <Action key={suggestion.name} title={`Insert #${suggestion.name}`} icon={Icon.Tag} onAction={() => setTagText(suggestion.text)} />
-              ))}
-            </ActionPanel.Section>
-          )}
+          <Action title="Create Tag" icon={Icon.Tag} onAction={() => push(<CreateTagForm onCreate={createTag} />)} />
         </ActionPanel>
       }
     >
@@ -211,12 +211,36 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
           <Form.Dropdown.Item key={c.value} value={c.value} title={c.title} />
         ))}
       </Form.Dropdown>
-      <Form.TextField id="tags" title="Tags" placeholder="read, design, new tag" value={tagText} onChange={setTagText} />
-      <Form.Description text="Separate tags with commas. New names create tags when you save." />
-      {suggestions.length > 0 && (
-        <Form.Description title="Matching Tags" text={`${suggestions.map((s) => s.name).join(", ")}. Select Insert from Actions to complete a tag.`} />
-      )}
+      <Form.TagPicker id="tags" title="Tags" value={selectedTags} onChange={setSelectedTags}>
+        {tagNames.map((name) => (
+          <Form.TagPicker.Item key={name} value={name} title={name} />
+        ))}
+      </Form.TagPicker>
+      <Form.Description text="Select existing tags above. To add a new name, select Create Tag from Actions." />
       <Form.Checkbox id="important" label="Favorite" defaultValue={false} />
+    </Form>
+  );
+}
+
+function CreateTagForm({ onCreate }: { onCreate: (name: string) => void }) {
+  const { pop } = useNavigation();
+  async function submit(values: { name: string }) {
+    const name = (values.name ?? "").trim().replace(/^#/, "").trim();
+    if (!name) {
+      await showToast({ style: Toast.Style.Failure, title: "Enter a tag name" });
+      return;
+    }
+    onCreate(name);
+    pop();
+  }
+  return (
+    <Form navigationTitle="Create Tag" actions={
+      <ActionPanel>
+        <Action.SubmitForm title="Add Tag to Bookmark" icon={Icon.Tag} onSubmit={(values: { name: string }) => void submit(values)} />
+      </ActionPanel>
+    }>
+      <Form.TextField id="name" title="Tag name" placeholder="New tag name" />
+      <Form.Description text="The tag is selected in Add Bookmark. Raindrop receives it only when you save the bookmark." />
     </Form>
   );
 }

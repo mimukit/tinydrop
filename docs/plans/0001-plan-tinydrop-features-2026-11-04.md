@@ -6,7 +6,7 @@ Grilled: 2026-11-05
 
 Quick Add is removed. Add Bookmark is the only command that creates bookmarks. The form has a Fetch Page Details action. It fills empty Title and Description fields through the read-only Raindrop URL parser. This decision replaces the Quick Add requirements below. The original phase records remain as implementation history.
 
-Add Bookmark selects the last saved collection if it still exists. Otherwise, it selects Bookmarks, with Unsorted as the fallback. One Tags field accepts comma-separated existing and new names. Matching names appear as insertion actions. Saving creates any new tags.
+Add Bookmark selects the last saved collection if it still exists. Otherwise, it selects Bookmarks, with Unsorted as the fallback. The Tags picker lets you search and select existing tags. A Create Tag action adds a new name to the same picker. Saving the bookmark creates new tags in Raindrop.
 
 ## Context
 
