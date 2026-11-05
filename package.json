@@ -1,0 +1,24 @@
+{
+  "name": "tinydrop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Raindrop.io extension for the Tinycast launcher.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.9.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "probe": "node scripts/probe.mjs"
+  },
+  "devDependencies": {
+    "@raycast/api": "^2.6.3",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}
