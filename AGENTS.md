@@ -30,6 +30,22 @@ Store tests call a real `sqlite3` binary and skip with a printed reason when non
 - Use pnpm only. Do not commit a lockfile from another package manager.
 - Never commit a Raindrop token. Scripts read it from an environment variable, and `.env` stays ignored.
 
+## Worktree setup
+
+setup:
+```sh
+cp "$GITKIT_REPO/.env" .env
+chmod 600 .env
+if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; fi
+```
+
+update:
+```sh
+if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; fi
+```
+
+`.env` holds `RAINDROP_TOKEN` and stays ignored. Never print it or commit it.
+
 ## Docs artifact naming
 
 - An artifact under `docs/<type>/` (a plan, a QA plan, a review, research) is named `NNNN-<type>-<slug>-YYYY-MM-DD.md`.

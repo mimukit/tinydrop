@@ -58,9 +58,11 @@ Sources, all in the ideas repo under `topics/tinydrop/`: `IDEA.md`, `NOTES.md` (
 | Undo | Delete moves to Trash with no confirmation. `⌘Z` reverts the last of up to 10 writes in the open window, as in tinytick. The stack ends when the window closes. |
 | Tests | vitest in Node for the pure modules (`src/search/`, `src/parse/`, `src/sync/`, `src/undo/`, `src/store/sql.ts`), beside tinytick's layout in `test/`. Store tests run the real `sqlite3` CLI through an injectable binary path, and skip with a printed reason when no binary exists. `pnpm smoke <tinycast-checkout>` runs the bundles against a fake Raindrop server. `pnpm bench` seeds 10,000 rows through the real store module and prints the p50 and p95 query time. |
 | `sqlite3` on the dev box | Approved outward action (grill Q21). Phase 3 runs `sudo apt install sqlite3` for the session, and adds `sqlite3` to the devaloy repo's `Dockerfile` as an uncommitted change for the owner to review and rebuild. |
-| Probe writes | Approved outward action (grill Q18). The Phase 1 probe makes its own bookmark, title `tinydrop probe`, link `https://example.com/tinydrop-probe`, in Unsorted. It edits, deletes and restores only that bookmark, and deletes it for good at the end. |
-| GitHub repo | The owner creates `mimukit/tinydrop` in Phase 2. No build step creates it. |
-| Attended phases | Phases 1 and 2 need the owner but not the Mac, and come first. Every Mac task is in Phase 9, attended, at the end (grill Q22). Phases 3 to 8 run unattended on this box. |
+| Probe writes | Approved outward action (grill Q18). The Phase 1 probe makes its own bookmark, title `tinydrop probe`, link `https://example.com/tinydrop-probe`, in Unsorted. It sends one highlight in the same `POST /raindrop` call, so no person adds it by hand (grill, 2026-11-05). It edits, deletes and restores only that bookmark, and deletes it for good at the end. |
+| GitHub repo | `mimukit/tinydrop` exists (created by the owner on 2026-11-05). No build step creates or reconfigures it. |
+| Token for the build | `RAINDROP_TOKEN` in the ignored `.env` at the repo root. The `## Worktree setup` in `AGENTS.md` copies it into each worktree. Scripts read it from the environment and never print it. |
+| Build approvals | Approved outward actions for the unattended build, beyond the issue branch: the Phase 1 probe writes listed above; `sudo apt install sqlite3` on this box; an uncommitted `sqlite3` line in `/home/dev/projects/devaloy/Dockerfile`; a read-only `git clone --depth 1 https://github.com/abue-ammar/tinycast` to `/home/dev/projects/tinycast` for `pnpm smoke`. |
+| Attended phases | Only Phase 9 is attended: every Mac task is there, at the end (grill Q22). Phases 1 to 8 run unattended on this box (grill, 2026-11-05). |
 | Resource budget | No background `interval` command, no menu bar. Each command bundle stays under 300 KB. |
 
 ## Approach
@@ -173,8 +175,8 @@ Each fact has a test, the phase that runs it, a pass rule and a fallback. A phas
 | First-sync time | Phase 1 pages the real library read-only with the pacer and scales to 10,000. Phase 9 times a real first sync in Tinycast | 1, then 9 | About 1.7 minutes for 10,000 (network); under 2 minutes end to end | Keep the progress toast and resume; record the number |
 | `child_process` blocks the UI | Type in the Search bar while a full resync writes | 9 | Typing stays responsive | Smaller write batches, with a yield between them |
 | Tinycast passes `⌘F` and `⌘T` | Press both on a row | 9 | Both reach the action | Pick other keys in a follow-up change |
-| Test token expiry | Record the token's creation date in Phase 1. Call `GET /user` with it in Phase 9 | 1, then 9 | Still valid 30 days after creation | Phase 3 builds the 401 path anyway: the toast sends you to Account to paste a new token |
-| Free plan keeps highlights | Add a highlight to the probe bookmark in the web app. Read it through `GET /raindrops/0` and `GET /highlights` | 1 | `highlights[]` comes back on the page call | Page call empty but `GET /highlights` works: one extra paged call per sync. Both empty: drop the `highlights` table and its FTS column |
+| Test token expiry | Record the date the token was first seen working (2026-11-05) in Phase 1, because the API gives no creation date. Call `GET /user` with it in Phase 9 | 1, then 9 | Still valid 30 days after that date | Phase 3 builds the 401 path anyway: the toast sends you to Account to paste a new token |
+| Free plan keeps highlights | Create the probe bookmark with one highlight in the `POST /raindrop` body. Read it through `GET /raindrops/0` and `GET /highlights` | 1 | `highlights[]` comes back on the page call | Page call empty but `GET /highlights` works: one extra paged call per sync. Both empty: drop the `highlights` table and its FTS column |
 | `sort=-lastUpdate` works | Edit the probe bookmark, then page with `sort=-lastUpdate` | 1 | The probe bookmark is first | Incremental sync falls back to a full ID pass with `sort=-created`, and only changed `lastUpdate` values are written |
 | Trash search finds recent deletes | Delete the probe bookmark, then `GET /raindrops/-99?search=lastUpdate:>` yesterday | 1 | The probe bookmark is in the reply | Sync runs a full Trash page pass (Trash is small) |
 | `PUT` restores from Trash | `PUT /raindrop/{id}` with the probe bookmark's old `collection.$id` | 1 | It returns to Unsorted | Undo of a delete is left out, and `⌘⌫` gets a confirmation |
@@ -182,20 +184,16 @@ Each fact has a test, the phase that runs it, a pass rule and a fallback. A phas
 
 ### Phase 1: live API probe
 
-Attended: needs a Raindrop test token from the owner, given as a secret, and one highlight the owner adds by hand to the probe bookmark in the Raindrop web app. No Mac needed.
-
 - Create the local scaffold from tinytick: `package.json`, `tsconfig.json`, `vitest.config.ts`, `.gitignore`, `LICENSE`, `AGENTS.md` (rewritten for tinydrop).
 - Write `scripts/probe.mjs`. It reads the token from an environment variable, never from a file in the repo, and runs each Phase 1 row in "Open facts as tests".
-- The probe creates the probe bookmark, waits for the owner to add the highlight, runs the checks, and deletes the bookmark for good at the end.
+- The probe creates the probe bookmark with one highlight, runs the checks, and deletes the bookmark for good at the end.
 - Page the real library with the 2-per-second pacer and the nonce, read-only. Print the bookmark count, the call count, the elapsed time, and the time scaled to 10,000.
-- Record the token's creation date.
+- Record 2026-11-05 as the date the token was first seen working.
 - Write the results to `docs/research/0001-research-api-probe-<date>.md`. Update a Design decisions row where a fallback applies.
 
 Done when: the research note lists a pass or a fallback for each Phase 1 fact, with the measured first-sync network time for the real library and for 10,000, and the probe bookmark no longer exists in Raindrop or its Trash.
 
 ### Phase 2: repo, build and harness
-
-Attended: the owner creates `mimukit/tinydrop` on GitHub. No build step creates the remote.
 
 - Complete the scaffold: `scripts/build.mjs`, `src/manifest.json`, `README.md` with install and keys, `assets/icon.png`, `pnpm build:install`.
 - Copy `scripts/smoke.mjs` and replace the fake TickTick server with a fake Raindrop server (`/user`, `/raindrops/0`, `/raindrops/-99`, `/collections`, `/collections/childrens`, `/tags/0`, `/raindrop`).
