@@ -160,7 +160,8 @@ function findAll(node, pred, out = []) {
 
 /**
  * A fresh temp supportPath. `seed: true` fills the store with the fake bookmarks;
- * `seed: { bookmarks, state }` fills it with those rows and `sync_state` entries.
+ * `seed: { bookmarks, state, collections, opens }` fills it with those rows, `sync_state`
+ * entries, collection rows, and one open per ID in `opens`.
  */
 async function supportDir({ seed = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "tinydrop-smoke-"));
@@ -168,6 +169,8 @@ async function supportDir({ seed = false } = {}) {
     const store = new SqliteStore({ path: join(dir, DB_FILE) });
     await store.upsertPage(seed === true ? BOOKMARKS : seed.bookmarks);
     if (seed.state) await store.setSyncState(seed.state);
+    if (seed.collections) await store.replaceCollections(seed.collections);
+    for (const id of seed.opens ?? []) await store.recordOpen(id);
   }
   return dir;
 }
@@ -184,13 +187,13 @@ const tempDirs = [];
  * Runs one command in a fresh harness. `keychain` is the starting Keychain,
  * `interact` drives the screen. Returns the failure count.
  */
-async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, interact } = {}) {
+async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, interact } = {}) {
   const cmd = manifest.commands.find((c) => c.name === commandName);
   assert.ok(cmd, `command ${commandName} is in the manifest`);
   const supportPath = await supportDir({ seed });
   tempDirs.push(supportPath);
-  const calls = [], toasts = [], updates = [], alerts = [];
-  const storage = {};
+  const calls = [], toasts = [], updates = [], alerts = [], opened = [], copied = [];
+  const storage = { ...(storageSeed ?? {}) };
   const harness = createHarness({
     verbose: !!process.env.VERBOSE,
     stubs: {
@@ -203,6 +206,8 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
       "storage.get": (a) => storage[a[0]] ?? null,
       "storage.set": (a) => { storage[a[0]] = a[1]; return null; },
       "storage.remove": (a) => { delete storage[a[0]]; return null; },
+      "system.open": (a) => { opened.push(a[0]); return null; },
+      "clipboard.copy": (a) => { copied.push(a[0]); return null; },
     },
   });
   fakeKeychain(harness, keychain);
@@ -217,7 +222,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
   console.log(`\n=== ${commandName} ===`);
   if (harness.state.failures.length) console.log("FAILURES:", harness.state.failures);
   let failed = harness.state.failures.length;
-  const ctx = { harness, calls, toasts, updates, alerts, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
+  const ctx = { harness, calls, toasts, updates, alerts, opened, copied, storage, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
   if (interact) {
     try {
       await interact(ctx);
@@ -275,6 +280,25 @@ function runToastAction(ctx, action) {
 const huds = (ctx) => ctx.toasts.filter((t) => t.hud).map((t) => t.hud);
 const toastTitles = (ctx) => [...ctx.toasts, ...ctx.updates].map((t) => t.title).filter(Boolean);
 const decoded = (calls) => calls.map((c) => decodeURIComponent(c));
+
+/** Picks a value in the search bar's collection dropdown. */
+async function pickDropdown(ctx, title) {
+  const dropdown = findAll(ctx.tree(), (n) => n.type === "List.Dropdown").at(-1);
+  assert.ok(dropdown, "a collection dropdown exists");
+  const item = findAll(dropdown, (n) => n.type === "List.Dropdown.Item" && n.props.title === title)[0];
+  assert.ok(item, `the dropdown has "${title}"`);
+  ctx.harness.dispatch("s1", dropdown.props.onChange.$fn, [item.props.value]);
+  await sleep(500);
+}
+
+const dropdownTitles = (ctx) =>
+  findAll(ctx.tree(), (n) => n.type === "List.Dropdown.Item").map((n) => n.props.title);
+const listNode = (ctx) => findAll(ctx.tree(), (n) => n.type === "List").at(-1);
+/** The action titles of the first bookmark row. */
+const rowActions = (ctx) => {
+  const row = findAll(ctx.tree(), (n) => n.type === "List.Item")[0];
+  return findAll(row, (n) => n.type === "Action").map((n) => `${n.props.title}${n.props.shortcut ? ` ${[...n.props.shortcut.modifiers, n.props.shortcut.key].join("+")}` : ""}`);
+};
 
 const rowTitles = (ctx) => findAll(ctx.tree(), (n) => n.type === "List.Item").map((n) => n.props.title);
 const sent = (calls, re) => calls.some((c) => re.test(c));
@@ -445,10 +469,112 @@ async function flowSearchSyncRejected() {
   }});
 }
 
-const FLOWS = [
+
+// ─── Phase 5: Search Bookmarks ──────────────────────────────────────
+
+const SEARCH_COLLECTIONS = [
+  { id: 11, title: "Dev", sort: 0, count: 2, group: "My", groupOrder: 0 },
+  { id: 12, title: "Rust", parentId: 11, sort: 0, count: 1 },
+];
+/** A synced store: three bookmarks, the Dev > Rust tree, a sync 5 minutes ago. */
+const searchSeed = (extra = {}) => ({
+  bookmarks: [...BOOKMARKS, NEW_ON_SERVER],
+  collections: SEARCH_COLLECTIONS,
+  state: { sync_mark: "2026-11-03T00:00:00.000Z", last_sync: String(Date.now() - 5 * 60_000) },
+  ...extra,
+});
+
+/** Phase 5: operators, the dropdown with in:, type icons, the sync time in the title, no request. */
+async function flowSearchOperators() {
+  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+    assert.equal(listNode(ctx).props.navigationTitle, "Search Bookmarks · Synced 5 min ago", "the sync time in the title");
+    assert.deepEqual(dropdownTitles(ctx), ["All", "Unsorted", "Dev", "Dev > Rust"], "the dropdown choices");
+    await typeSearch(ctx, "#rust type:article");
+    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "#tag with type:");
+    const row = findAll(ctx.tree(), (n) => n.type === "List.Item")[0];
+    assert.equal(row.props.subtitle, "doc.rust-lang.org", "the domain");
+    assert.ok(JSON.stringify(row.props.icon).includes("paragraph"), `the article icon: ${JSON.stringify(row.props.icon)}`);
+    assert.ok(JSON.stringify(row.props.accessories).includes("#rust #read"), "the tags");
+    await typeSearch(ctx, "is:fav");
+    assert.deepEqual(rowTitles(ctx), ["Cooking pasta"], "is:fav");
+    await typeSearch(ctx, 'in:"dev" -zig');
+    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "in: is the collection itself, minus the excluded word");
+    await typeSearch(ctx, "in:Dev");
+    assert.deepEqual(rowTitles(ctx), ["Zig comptime"], "in:Dev");
+    await pickDropdown(ctx, "Dev > Rust");
+    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "the dropdown and in: combine with AND");
+    await typeSearch(ctx, "");
+    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "the dropdown alone");
+    await typeSearch(ctx, "in:nope");
+    assert.deepEqual(rowTitles(ctx), ['No collection named "nope"'], "an unknown in: name");
+    assert.equal(ctx.calls.length, 0, `search sends no request: ${ctx.calls}`);
+  }});
+}
+
+/** Phase 5: ⌘I opens the details panel, LocalStorage keeps it, a new launch starts with it open. */
+async function flowDetailsPanel() {
+  let failed = await run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
+    await typeSearch(ctx, "borrow");
+    assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel starts closed");
+    const actions = rowActions(ctx);
+    for (const want of ["Open in Browser", "Show Details cmd+i", "Open in Raindrop cmd+o", "Copy URL cmd+shift+c", "Copy Markdown Link cmd+shift+l", "Sync Now cmd+r", "Full Resync cmd+shift+r", "Account cmd+shift+a"]) {
+      assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+    }
+    assert.ok(!actions.some((a) => a.endsWith("cmd+return") || a.endsWith("cmd+enter")), "no ⌘↵ binding");
+    await press(ctx, "Show Details");
+    assert.equal(listNode(ctx).props.isShowingDetail, true, "the panel is open");
+    assert.equal(ctx.storage.showDetail, "1", "LocalStorage keeps the state");
+    const detail = findAll(ctx.tree(), (n) => n.type === "List.Item.Detail")[0];
+    assert.ok(detail, "the row has a detail");
+    assert.match(detail.props.markdown, /> borrow checker/, "the highlight in the panel");
+    const labels = Object.fromEntries(findAll(detail, (n) => n.type === "Detail.Metadata.Label").map((n) => [n.props.title, n.props.text]));
+    assert.equal(labels.Collection, "Dev > Rust", "the collection path");
+    assert.equal(labels.Created, "2026-10-01", "the created date");
+    assert.equal(labels["Last update"], "2026-11-01", "the last-update date");
+    await press(ctx, "Hide Details");
+    assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel closes");
+    assert.equal(ctx.storage.showDetail, "0");
+  }});
+  failed += await run("search-bookmarks", { seed: searchSeed(), storage: { showDetail: "1" }, interact: async (ctx) => {
+    await waitFor(() => listNode(ctx)?.props.isShowingDetail === true, "the panel open from LocalStorage");
+  }});
+  return failed;
+}
+
+/** Phase 5: ↵ opens the link and records an open, which moves the row up the empty-query list; ⌘O, ⌘⇧C, ⌘⇧L. */
+async function flowOpenAndCopy() {
+  return run("search-bookmarks", { seed: searchSeed({ opens: [102] }), interact: async (ctx) => {
+    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+    assert.equal(rowTitles(ctx)[0], "Cooking pasta", "the opened row comes first");
+    await typeSearch(ctx, "zig");
+    await press(ctx, "Open in Browser");
+    assert.deepEqual(ctx.opened, ["https://ziglang.org/comptime"], "the link opens in the browser");
+    const store = storeOf(ctx);
+    assert.equal((await store.getBookmark(103))?.openCount, 1, "the open is recorded");
+    await press(ctx, "Open in Browser");
+    assert.equal((await store.getBookmark(103))?.openCount, 2, "a second open is recorded");
+    assert.equal((await store.topOpened())[0].id, 103, "the empty-query order follows the opens");
+    await press(ctx, "Open in Raindrop");
+    assert.equal(ctx.opened.at(-1), "https://app.raindrop.io/my/11/item/103/web", "the Raindrop web app");
+    assert.equal((await store.getBookmark(103))?.openCount, 2, "⌘O counts no open");
+    await press(ctx, "Copy URL");
+    await press(ctx, "Copy Markdown Link");
+    const texts = ctx.copied.map((c) => (typeof c === "string" ? c : c.text));
+    assert.deepEqual(texts, ["https://ziglang.org/comptime", "[Zig comptime](https://ziglang.org/comptime)"], "the copied text");
+    await typeSearch(ctx, "");
+    assert.equal(rowTitles(ctx)[0], "Zig comptime", "a fresh empty query lists the most opened first");
+  }});
+}
+
+const ONLY = process.env.ONLY;
+const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut, flowPlaceholders,
   flowSyncCommand, flowSyncFirstAndRejected, flowSearchSync, flowFullResync, flowResyncReminder, flowRefreshOnOpen, flowSearchSyncRejected,
+  flowSearchOperators, flowDetailsPanel, flowOpenAndCopy,
 ];
+/** `ONLY=flowName pnpm smoke …` runs one flow. */
+const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;
 
 let failures = 0;
 try {

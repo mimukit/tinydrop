@@ -5,8 +5,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Raindrop, RaindropType } from "../api/types";
-import { LOCAL_DDL, MIRROR_DDL, MIRROR_TABLES, FTS_COLUMNS, FTS_WEIGHTS, OPENS_VERSION, SCHEMA_VERSION } from "./schema";
-import { ftsPrefixQuery, sqlBool, sqlInt, sqlIntList, sqlNullable, sqlString } from "./sql";
+import { LOCAL_DDL, MIRROR_DDL, MIRROR_TABLES, FTS_COLUMNS, OPENS_VERSION, SCHEMA_VERSION } from "./schema";
+import { BOOKMARK_COLUMNS, compileSearch, SEARCH_LIMIT, sqlBool, sqlInt, sqlIntList, sqlNullable, sqlString } from "./sql";
 import { runProcess, type Runner } from "./run";
 import { TimeRing } from "./timing";
 import {
@@ -23,7 +23,6 @@ import {
 export const DEFAULT_SQLITE3 = "/usr/bin/sqlite3";
 export const DB_FILE = "tinydrop.sqlite";
 const TIMEOUT = [".timeout 2000"];
-const MAX_ROWS = 50;
 const TYPES: RaindropType[] = ["link", "article", "image", "video", "document", "audio"];
 
 export interface SqliteStoreOptions {
@@ -71,10 +70,6 @@ export function checkFeatures(binary: string, runner: Runner = runProcess): Prom
 }
 
 type Row = Record<string, unknown>;
-
-const BOOKMARK_COLUMNS = `b.id, b.link, b.title, b.domain, b.type, b.collection_id, b.tags, b.note, b.excerpt, b.cover,
-  b.important, b.created, b.last_update, coalesce(o.count, 0) AS open_count, o.last_opened,
-  (SELECT json_group_array(json_object('text', h.text, 'note', h.note)) FROM highlights h WHERE h.bookmark_id = b.id) AS highlights`;
 
 function parseJsonArray<T>(value: unknown): T[] {
   if (typeof value !== "string" || !value) return [];
@@ -255,16 +250,7 @@ export class SqliteStore implements BookmarkStore {
   }
 
   async search(query: SearchQuery): Promise<BookmarkRow[]> {
-    const match = ftsPrefixQuery(query.words);
-    if (!match) return this.topOpened(query.limit);
-    const limit = Math.min(query.limit ?? MAX_ROWS, MAX_ROWS);
-    const where = [`bookmarks_fts MATCH ${sqlString(match)}`];
-    if (query.collectionId !== undefined) where.push(`b.collection_id = ${sqlInt(query.collectionId)}`);
-    const sql = `SELECT ${BOOKMARK_COLUMNS}
-FROM bookmarks_fts JOIN bookmarks b ON b.id = bookmarks_fts.rowid LEFT JOIN opens o ON o.bookmark_id = b.id
-WHERE ${where.join(" AND ")}
-ORDER BY bm25(bookmarks_fts, ${FTS_WEIGHTS.join(", ")}), open_count DESC, b.created DESC
-LIMIT ${sqlInt(limit)};`;
+    const sql = compileSearch(query);
     await this.open();
     const start = this.now();
     const rows = await this.readRaw(sql);
@@ -272,11 +258,8 @@ LIMIT ${sqlInt(limit)};`;
     return rows.map(toBookmark);
   }
 
-  async topOpened(limit = MAX_ROWS): Promise<BookmarkRow[]> {
-    const rows = await this.read(`SELECT ${BOOKMARK_COLUMNS}
-FROM bookmarks b LEFT JOIN opens o ON o.bookmark_id = b.id
-ORDER BY open_count DESC, o.last_opened DESC, b.created DESC
-LIMIT ${sqlInt(Math.min(limit, MAX_ROWS))};`);
+  async topOpened(limit = SEARCH_LIMIT): Promise<BookmarkRow[]> {
+    const rows = await this.read(compileSearch({ words: [], limit }));
     return rows.map(toBookmark);
   }
 

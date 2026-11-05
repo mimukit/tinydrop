@@ -1,7 +1,9 @@
 // pnpm bench: seeds 10,000 synthetic bookmarks through the real store module
 // (src/store/sqlite.ts, bundled by esbuild, see scripts/lib/load-store.mjs) in
 // 200 batches of 50, timing each batch, then runs 50 FTS queries of 1 to 3
-// prefix words. Prints p50, p95 and max for the writes and the queries.
+// prefix words, 50 queries with the Phase 5 operators (tag, type, collection,
+// favorite, exclude, phrase), and 50 empty queries (most opened, then newest)
+// over 100 opened bookmarks. Prints p50, p95 and max for the writes and the queries.
 // The plan's targets: a query p95 under 40 ms, a batch under 50 ms (on the Mac).
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,8 +96,37 @@ try {
     queries.push(performance.now() - t);
   }
 
+  for (let o = 0; o < 100; o++) await store.recordOpen(1 + Math.floor(rand() * count));
+
+  const prefix = () => {
+    const w = pick(WORDS);
+    return w.slice(0, Math.max(2, Math.min(w.length, 2 + Math.floor(rand() * 4))));
+  };
+  const operators = [];
+  for (let q = 0; q < QUERIES; q++) {
+    const query = { words: rand() < 0.8 ? [prefix()] : [] };
+    if (rand() < 0.5) query.tags = [pick(TAGS)];
+    if (rand() < 0.3) query.types = [pick(TYPES)];
+    if (rand() < 0.3) query.collectionSets = [[Math.floor(rand() * 20) + 1]];
+    if (rand() < 0.2) query.collectionId = Math.floor(rand() * 20) + 1;
+    if (rand() < 0.2) query.favorite = true;
+    if (rand() < 0.3) query.excludes = [pick(WORDS)];
+    if (rand() < 0.2) query.phrases = [`${pick(WORDS)} ${pick(WORDS)}`];
+    const t = performance.now();
+    await store.search(query);
+    operators.push(performance.now() - t);
+  }
+  const empty = [];
+  for (let q = 0; q < QUERIES; q++) {
+    const t = performance.now();
+    await store.search({ words: [] });
+    empty.push(performance.now() - t);
+  }
+
   stats(`write batch (${PER_BATCH} rows)`, writes);
   stats("query (1-3 prefix words)", queries);
+  stats("query (operators)", operators);
+  stats("query (empty: most opened)", empty);
   stats("query (store ring)", store.queryTimes());
 } finally {
   rmSync(dir, { recursive: true, force: true });

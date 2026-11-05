@@ -43,11 +43,25 @@ export interface TagRow {
   count: number;
 }
 
-/** A search. Phase 5 adds the operators; this phase knows free-text prefix words and a collection. */
+/** A search. src/search/ builds it from the search bar text; src/store/sql.ts compiles it. */
 export interface SearchQuery {
   /** Free-text words; each one matches as an FTS5 prefix term. */
   words: string[];
+  /** Exact FTS5 phrases. */
+  phrases?: string[];
+  /** Words or phrases the text must not hold (exact terms, not prefixes). */
+  excludes?: string[];
+  /** Every tag must be on the bookmark (case-insensitive). */
+  tags?: string[];
+  /** No tag here may be on the bookmark. */
+  excludeTags?: string[];
+  /** Any of these types. */
+  types?: RaindropType[];
+  /** Each set is one `in:`: the bookmark is in one of its IDs. Sets combine with AND. */
+  collectionSets?: number[][];
+  /** The dropdown collection. */
   collectionId?: number;
+  favorite?: boolean;
   limit?: number;
 }
 
@@ -61,7 +75,10 @@ export interface UpsertOptions {
 export interface BookmarkStore {
   /** Opens the database: the feature check, WAL, the schema and its version. Safe to call twice. */
   open(): Promise<void>;
-  /** Free-text search, ranked by bm25, then by open count. At most 50 rows. */
+  /**
+   * Search with operators, ranked by bm25, then by open count. With no text term, the
+   * most-opened rows, then the newest. At most 50 rows.
+   */
   search(query: SearchQuery): Promise<BookmarkRow[]>;
   /** The most-opened bookmarks, then the newest. */
   topOpened(limit?: number): Promise<BookmarkRow[]>;
