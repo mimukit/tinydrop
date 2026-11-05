@@ -868,7 +868,10 @@ async function flowAddDefaultsAndTags() {
       assert.equal(field("Form.Dropdown", "collection").props.value, "11", "Bookmarks is the default");
       assert.equal(field("Form.TextField", "newTags"), undefined, "one field handles all tags");
       assert.ok(findAll(ctx.tree(), (n) => n.type === "Form.TagPicker.Item" && n.props.value === "Read").length > 0, "the picker offers stored tags");
+      const pickerId = field("Form.TagPicker", "tags").id;
       await setField(ctx, "Form.TagPicker", "tags", ["Read"]);
+      assert.notEqual(field("Form.TagPicker", "tags").id, pickerId, "selection recreates the native picker to clear its private search text");
+      assert.deepEqual(field("Form.TagPicker", "tags").props.value, ["Read"], "clearing the search keeps the selected tag");
       await press(ctx, "Create Tag");
       await setField(ctx, "Form.TextField", "name", "brand new");
       await press(ctx, "Add Tag to Bookmark");

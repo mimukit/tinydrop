@@ -211,7 +211,9 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
           <Form.Dropdown.Item key={c.value} value={c.value} title={c.title} />
         ))}
       </Form.Dropdown>
-      <Form.TagPicker id="tags" title="Tags" value={selectedTags} onChange={setSelectedTags}>
+      {/* Tinycast keeps the search query in native state. A new picker clears it
+          after selection, while React keeps the selected tags in this form. */}
+      <Form.TagPicker key={JSON.stringify(selectedTags)} id="tags" title="Tags" value={selectedTags} onChange={setSelectedTags}>
         {tagNames.map((name) => (
           <Form.TagPicker.Item key={name} value={name} title={name} />
         ))}
