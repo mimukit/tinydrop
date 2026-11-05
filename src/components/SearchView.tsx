@@ -146,6 +146,16 @@ export function SearchView() {
     if (confirmed) await sync(true);
   };
 
+  const confirmTrash = async (row: BookmarkRow) => {
+    const confirmed = await confirmAlert({
+      title: "Move bookmark to Trash?",
+      message: row.title || row.link,
+      primaryAction: { title: "Move to Trash", style: Alert.ActionStyle.Destructive },
+      dismissAction: { title: "Cancel" },
+    });
+    if (confirmed) await writer.trash(row, { label: "Delete", message: "Moved to Trash" });
+  };
+
   /** Refresh on open when the store is stale, then the 7-day full-resync reminder. */
   const afterOpen = async (isLive: () => boolean) => {
     try {
@@ -414,7 +424,7 @@ export function SearchView() {
         icon={Icon.Trash}
         style={Action.Style.Destructive}
         shortcut={TRASH_KEY}
-        onAction={() => void writer.trash(row, { label: "Delete", message: "Moved to Trash" })}
+        onAction={() => void confirmTrash(row)}
       />
       {undoAction}
     </ActionPanel.Section>

@@ -98,7 +98,7 @@ While you type `#`, rows suggest stored tags. Type more letters to narrow the su
 | `⌘M` | Move to a collection |
 | `⌘T` | Toggle a tag |
 | `⌘F` | Add to or remove from favorites |
-| `⌘⌫` | Move to Trash, no confirmation |
+| `⌘⌫` | Move to Trash, after a confirmation |
 | `⌘Z` | Undo the last change (up to 10, while the window is open). Shows only when there is something to undo. |
 | `⌘N` | Add Bookmark |
 | `⌘⇧N` | Quick Add |

@@ -201,7 +201,7 @@ const tempDirs = [];
  * Runs one command in a fresh harness. `keychain` is the starting Keychain,
  * `interact` drives the screen. Returns the failure count.
  */
-async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, clipboard = "", interact } = {}) {
+async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, clipboard = "", confirmations = [], interact } = {}) {
   const cmd = manifest.commands.find((c) => c.name === commandName);
   assert.ok(cmd, `command ${commandName} is in the manifest`);
   const supportPath = await supportDir({ seed });
@@ -216,7 +216,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
       "feedback.showHUD": (a) => { toasts.push({ hud: a[0] }); return null; },
       "feedback.updateToast": (a) => { updates.push(a[1]); return null; },
       "feedback.hideToast": () => null,
-      "feedback.confirmAlert": (a) => { alerts.push(a[0]); return true; },
+      "feedback.confirmAlert": (a) => { alerts.push(a[0]); return confirmations.shift() ?? true; },
       "storage.get": (a) => storage[a[0]] ?? null,
       "storage.set": (a) => { storage[a[0]] = a[1]; return null; },
       "storage.remove": (a) => { delete storage[a[0]]; return null; },
@@ -876,6 +876,28 @@ async function flowQuickAddTagSuggestions() {
   });
 }
 
+async function flowTrashConfirmation() {
+  return run("search-bookmarks", {
+    seed: searchSeed(), confirmations: [false, true],
+    interact: async (ctx) => {
+      await typeSearch(ctx, "zig");
+      await press(ctx, "Move to Trash");
+      assert.equal(ctx.alerts.length, 1, "Trash asks for confirmation");
+      assert.equal(ctx.alerts[0].title, "Move bookmark to Trash?");
+      assert.equal(ctx.alerts[0].message, "Zig comptime");
+      assert.equal(ctx.calls.length, 0, "Cancel sends no request");
+      assert.equal((await storeOf(ctx).getBookmark(103)).collectionId, 11, "Cancel keeps the row");
+      assert.ok(!hasActionPrefix(ctx, "Undo"), "Cancel adds no undo entry");
+      await press(ctx, "Move to Trash");
+      await waitCalls(ctx, 1);
+      assert.equal(ctx.alerts.length, 2, "the next attempt asks again");
+      assert.deepEqual(ctx.calls, ["DELETE /raindrop/103"], "confirmation sends one delete");
+      await waitFor(() => rowTitles(ctx).includes("No bookmark matches"), "the confirmed row leaves the list");
+      assert.ok(hasActionPrefix(ctx, "Undo"), "the confirmed action supports undo");
+    },
+  });
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -886,6 +908,7 @@ const FLOWS_ALL = [
   flowEndToEnd,
   flowTagSuggestions,
   flowQuickAddTagSuggestions,
+  flowTrashConfirmation,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

@@ -55,7 +55,7 @@ Sources, all in the ideas repo under `topics/tinydrop/`: `IDEA.md`, `NOTES.md` (
 | Add form | URL from the clipboard when it holds a URL, title, note, collection, tags, favorite. `pleaseParse: {}` fills title, excerpt and cover. The last used collection is kept in `LocalStorage`. Inline collection create waits for v1.1. |
 | Duplicate URL | The Add form and the Quick Add preview show "Already saved in Dev" when the normalized link (lowercase host, no trailing `/`, no `utm_*` parameters) is in the store. A second Enter saves the duplicate (grill Q14). |
 | Save browser tab | Out. The Add form takes the URL from the clipboard. |
-| Undo | Delete moves to Trash with no confirmation. `⌘Z` reverts the last of up to 10 writes in the open window, as in tinytick. The stack ends when the window closes. |
+| Undo | Delete moves to Trash after a confirmation, per the owner's change on 2026-11-05. `⌘Z` reverts the last of up to 10 writes in the open window, as in tinytick. The stack ends when the window closes. |
 | Tests | vitest in Node for the pure modules (`src/search/`, `src/parse/`, `src/sync/`, `src/undo/`, `src/store/sql.ts`), beside tinytick's layout in `test/`. Store tests run the real `sqlite3` CLI through an injectable binary path, and skip with a printed reason when no binary exists. `pnpm smoke <tinycast-checkout>` runs the bundles against a fake Raindrop server. `pnpm bench` seeds 10,000 rows through the real store module and prints the p50 and p95 query time. |
 | `sqlite3` on the dev box | Approved outward action (grill Q21). Phase 3 runs `sudo apt install sqlite3` for the session, and adds `sqlite3` to the devaloy repo's `Dockerfile` as an uncommitted change for the owner to review and rebuild. |
 | Probe writes | Approved outward action (grill Q18). The Phase 1 probe makes its own bookmark, title `tinydrop probe`, link `https://example.com/tinydrop-probe`, in Unsorted. It sends one highlight in the same `POST /raindrop` call, so no person adds it by hand (grill, 2026-11-05). It edits, deletes and restores only that bookmark, and deletes it for good at the end. |
@@ -153,7 +153,7 @@ Tinycast reserves `⌘W`, `⌘,`, `⌘.`, `⌘Q` and `⌃N/P/F/B`. `⌘↵` is n
 | `⌘M` | Move to a collection (picker) |
 | `⌘T` | Toggle tags (picker) |
 | `⌘F` | Toggle favorite |
-| `⌘⌫` | Delete to Trash, no confirmation |
+| `⌘⌫` | Delete to Trash, after a confirmation |
 | `⌘Z` | Undo the last write (shows only when the stack has an entry) |
 | `⌘N` | Add Bookmark form |
 | `⌘⇧N` | Quick Add |
@@ -234,7 +234,7 @@ Done when: vitest covers each operator alone and combined, an operator with a qu
 ### Phase 6: row actions and undo (#1) (built 2026-11-05)
 
 - Build the Edit form (link, title, note, collection, tags, favorite), the move picker, the tag picker and the favorite toggle, from the copied `Picker.tsx`.
-- Build delete to Trash with no confirmation.
+- Build delete to Trash with a confirmation.
 - Each action changes the store, sends the changed fields through `WriteQueue`, pushes an undo entry, replaces the row from the reply, and reverts with a toast on failure.
 - Copy `src/undo/stack.ts` with entry kinds `fields`, `move` and `trash`, and the `⌘Z` action.
 
