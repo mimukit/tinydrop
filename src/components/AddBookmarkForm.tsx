@@ -16,10 +16,12 @@ import {
   showToast,
   useNavigation,
 } from "@raycast/api";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { RaindropClient } from "../api/client";
+import { getAuth } from "../auth/secrets";
 import { UNSORTED_COLLECTION, type RaindropPatch } from "../api/types";
 import { duplicateText, findDuplicate, httpUrl, normalizeLink, type Duplicate } from "../parse/link";
-import { mergeTags } from "../parse/quickadd";
+import { mergeTags } from "../parse/tags";
 import { ALL_VALUE, collectionChoices } from "../search/collections";
 import type { CollectionRow, TagRow } from "../store/types";
 import type { BookmarkWriter } from "../write/writer";
@@ -33,6 +35,7 @@ export const LAST_COLLECTION_KEY = "lastCollection";
 interface Values {
   link: string;
   title: string;
+  excerpt: string;
   note: string;
   collection: string;
   tags: string[];
@@ -43,6 +46,15 @@ interface Values {
 export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; onSaved?: () => void }) {
   const { pop } = useNavigation();
   const [link, setLink] = useState("");
+  const [title, setTitle] = useState("");
+  const [excerpt, setExcerpt] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const request = useRef(0);
+  const pending = useRef(false);
+  const changeLink = (value: string) => {
+    request.current++;
+    setLink(value);
+  };
   const [collection, setCollection] = useState(String(UNSORTED_COLLECTION));
   const [collections, setCollections] = useState<CollectionRow[]>([]);
   const [tags, setTags] = useState<TagRow[]>([]);
@@ -76,6 +88,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
     })();
     return () => {
       live = false;
+      request.current++;
     };
   }, []);
 
@@ -99,7 +112,34 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
     };
   }, [link, collections]);
 
+  async function fetchDetails() {
+    if (busy || pending.current) return;
+    const url = link.trim();
+    if (!httpUrl(url)) {
+      await showToast({ style: Toast.Style.Failure, title: "Enter an http or https URL" });
+      return;
+    }
+    pending.current = true;
+    setFetching(true);
+    const id = ++request.current;
+    try {
+      const { token } = await getAuth();
+      if (!token) throw new Error("Sign in through Account first");
+      const details = await new RaindropClient(token).parseUrl(url);
+      if (id !== request.current) return;
+      setTitle((value) => value.trim() ? value : details.title);
+      setExcerpt((value) => value.trim() ? value : details.excerpt);
+      await showToast({ style: Toast.Style.Success, title: "Page details fetched", message: "Existing text stays unchanged" });
+    } catch (error) {
+      if (id === request.current) await showFailure(error, { title: "Could not fetch page details" });
+    } finally {
+      pending.current = false;
+      setFetching(false);
+    }
+  }
+
   async function submit(values: Values) {
+    if (busy || pending.current) return;
     const url = (values.link ?? link).trim();
     if (!httpUrl(url)) {
       await showToast({ style: Toast.Style.Failure, title: "Enter an http or https URL" });
@@ -116,6 +156,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
     const target = Number(values.collection ?? collection);
     const patch: RaindropPatch = { link: url, collection: { $id: target }, pleaseParse: {} };
     if (values.title?.trim()) patch.title = values.title.trim();
+    if (values.excerpt?.trim()) patch.excerpt = values.excerpt.trim();
     if (values.note?.trim()) patch.note = values.note;
     const allTags = mergeTags(values.tags ?? [], values.newTags ?? "");
     if (allTags.length) patch.tags = allTags;
@@ -143,16 +184,19 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
   return (
     <Form
       navigationTitle="Add Bookmark"
-      isLoading={busy}
+      isLoading={busy || fetching}
       actions={
         <ActionPanel>
           <Action.SubmitForm title="Save Bookmark" icon={Icon.Plus} onSubmit={(v: Values) => void submit(v)} />
+          <Action title="Fetch Page Details" icon={Icon.ArrowClockwise} shortcut={{ modifiers: ["cmd"], key: "r" }} onAction={() => void fetchDetails()} />
         </ActionPanel>
       }
     >
-      <Form.TextField id="link" title="URL" placeholder="https://" value={link} onChange={setLink} />
+      <Form.TextField id="link" title="URL" placeholder="https://" value={link} onChange={changeLink} />
+      <Form.Description text="Press ⌘R or use Fetch Page Details to fill empty Title and Description fields." />
       {duplicate && <Form.Description title="Duplicate" text={duplicateText(duplicate)} />}
-      <Form.TextField id="title" title="Title" placeholder="Empty: Raindrop reads it from the page" defaultValue="" />
+      <Form.TextField id="title" title="Title" placeholder="Empty: Raindrop reads it from the page" value={title} onChange={setTitle} />
+      <Form.TextArea id="excerpt" title="Description" value={excerpt} onChange={setExcerpt} />
       <Form.TextArea id="note" title="Note" defaultValue="" />
       <Form.Dropdown id="collection" title="Collection" value={collection} onChange={setCollection}>
         {choices.map((c) => (

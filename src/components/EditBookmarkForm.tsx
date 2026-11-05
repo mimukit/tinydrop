@@ -3,7 +3,7 @@
 import { Action, ActionPanel, Form, Icon, Toast, showToast, useNavigation } from "@raycast/api";
 import type { RaindropPatch } from "../api/types";
 import { isHttpUrl } from "../parse/link";
-import { mergeTags } from "../parse/quickadd";
+import { mergeTags } from "../parse/tags";
 import { ALL_VALUE, collectionChoices } from "../search/collections";
 import type { BookmarkRow, CollectionRow, TagRow } from "../store/types";
 

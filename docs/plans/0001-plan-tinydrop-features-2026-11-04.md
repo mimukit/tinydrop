@@ -2,6 +2,10 @@
 
 Grilled: 2026-11-05
 
+## Owner changes on 2026-11-05
+
+Quick Add is removed. Add Bookmark is the only command that creates bookmarks. The form has a Fetch Page Details action. It fills empty Title and Description fields through the read-only Raindrop URL parser. This decision replaces the Quick Add requirements below. The original phase records remain as implementation history.
+
 ## Context
 
 I want to find, open and save my Raindrop.io bookmarks from the Tinycast launcher, with no wait on the network. The one Raycast extension for Raindrop, `raindrop-io`, has no local store. It calls the API on every keystroke, and its open issues about speed (#16011), empty collection dropdowns (#26089) and `fetch failed` errors (#25645) all come from that design.

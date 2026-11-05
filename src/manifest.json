@@ -5,9 +5,13 @@
   "description": "Search, open and save Raindrop.io bookmarks from an offline store. No wait on the network.",
   "icon": "icon.png",
   "author": "mimukit",
-  "categories": ["Productivity"],
+  "categories": [
+    "Productivity"
+  ],
   "license": "MIT",
-  "platforms": ["macOS"],
+  "platforms": [
+    "macOS"
+  ],
   "commands": [
     {
       "name": "search-bookmarks",
@@ -22,21 +26,6 @@
       "subtitle": "Raindrop",
       "description": "Save a bookmark with a form. The URL comes from the clipboard.",
       "mode": "view"
-    },
-    {
-      "name": "quick-add",
-      "title": "Quick Add",
-      "subtitle": "Raindrop",
-      "description": "Save a bookmark in one line: url #tag ~collection !fav",
-      "mode": "view",
-      "arguments": [
-        {
-          "name": "text",
-          "type": "text",
-          "placeholder": "https://example.com #read ~Dev !fav",
-          "required": false
-        }
-      ]
     },
     {
       "name": "sync",
@@ -64,9 +53,18 @@
       "required": false,
       "default": "1d",
       "data": [
-        { "title": "1 hour", "value": "1h" },
-        { "title": "6 hours", "value": "6h" },
-        { "title": "1 day", "value": "1d" }
+        {
+          "title": "1 hour",
+          "value": "1h"
+        },
+        {
+          "title": "6 hours",
+          "value": "6h"
+        },
+        {
+          "title": "1 day",
+          "value": "1d"
+        }
       ]
     }
   ]

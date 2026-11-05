@@ -2,7 +2,7 @@
 // collection dropdown, type icons, the details panel (⌘I), open (counts an open),
 // copy URL and Markdown link, the Raindrop web app. Sync: ⌘R, ⌘⇧R after a
 // confirmation, refresh on open, and the 7-day reminder. Row writes: ⌘E edit,
-// ⌘M move, ⌘T tags, ⌘F favorite, ⌘⌫ Trash, ⌘Z undo; ⌘N Add Bookmark, ⌘⇧N Quick Add.
+// ⌘M move, ⌘T tags, ⌘F favorite, ⌘⌫ Trash, ⌘Z undo; ⌘N Add Bookmark.
 import {
   Action,
   ActionPanel,
@@ -34,7 +34,6 @@ import { AccountView } from "./AccountView";
 import { AddBookmarkForm } from "./AddBookmarkForm";
 import { EditBookmarkForm } from "./EditBookmarkForm";
 import { Picker } from "./Picker";
-import { QuickAddView } from "./QuickAddView";
 import { showFailure } from "./failure";
 import { openStore } from "./store";
 import { syncNow, syncTimes } from "./sync";
@@ -55,7 +54,6 @@ const FAVORITE_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "f" };
 const TRASH_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "backspace" };
 const UNDO_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "z" };
 const ADD_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "n" };
-const QUICK_ADD_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "n" };
 /** LocalStorage key of the details panel state: "1" open, "0" closed. */
 export const DETAIL_STORAGE_KEY = "showDetail";
 
@@ -335,12 +333,6 @@ export function SearchView() {
         icon={Icon.Plus}
         shortcut={ADD_KEY}
         onAction={() => push(<AddBookmarkForm writer={writer} onSaved={afterAdd} />)}
-      />
-      <Action
-        title="Quick Add"
-        icon={Icon.PlusCircle}
-        shortcut={QUICK_ADD_KEY}
-        onAction={() => push(<QuickAddView writer={writer} onSaved={afterAdd} />)}
       />
     </>
   );

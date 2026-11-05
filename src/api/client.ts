@@ -110,6 +110,16 @@ export class RaindropClient {
     return (await this.request<UserReply>("GET", "/user")).user;
   }
 
+  /** Reads page metadata without creating a bookmark. */
+  async parseUrl(url: string): Promise<{ title: string; excerpt: string }> {
+    const reply = await this.request<ItemReply<{ title?: string; excerpt?: string }>>("GET", `/import/url/parse?url=${encodeURIComponent(url)}`);
+    if (!reply?.result || !reply.item) throw new Error("Could not read the page details");
+    const title = typeof reply.item.title === "string" ? reply.item.title : "";
+    const excerpt = typeof reply.item.excerpt === "string" ? reply.item.excerpt : "";
+    if (!title && !excerpt) throw new Error("The page has no title or description");
+    return { title, excerpt };
+  }
+
   /** One page of bookmarks in a collection (0 = all, -1 = Unsorted, -99 = Trash). */
   async getRaindrops(collectionId: number, query: PageQuery = {}): Promise<ItemsReply<Raindrop>> {
     const params = new URLSearchParams();

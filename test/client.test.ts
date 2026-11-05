@@ -40,6 +40,23 @@ describe("RaindropApiError", () => {
 });
 
 describe("RaindropClient", () => {
+  it("reads URL metadata through an encoded GET without a write", async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { result: true, item: { title: "Page", excerpt: "Description" } } }]);
+    const client = new RaindropClient("tok", { ...noWait, fetch });
+    expect(await client.parseUrl("https://example.com/?a=1&b=2")).toEqual({ title: "Page", excerpt: "Description" });
+    const url = new URL(calls[0].url);
+    expect(url.pathname).toBe("/rest/v1/import/url/parse");
+    expect(url.searchParams.get("url")).toBe("https://example.com/?a=1&b=2");
+    expect(calls[0].init?.method).toBe("GET");
+  });
+
+  it("rejects unsuccessful and empty metadata replies", async () => {
+    for (const body of [{ result: false, item: { title: "Invalid" } }, { result: true, item: {} }]) {
+      const { fetch } = fakeFetch([{ status: 200, body }]);
+      await expect(new RaindropClient("tok", { ...noWait, fetch }).parseUrl("https://example.com")).rejects.toThrow();
+    }
+  });
+
   it("adds a nonce to every GET and none to a write", async () => {
     const { fetch, calls } = fakeFetch([
       { status: 200, body: { result: true, user: { _id: 1, fullName: "A" } } },

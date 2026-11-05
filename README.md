@@ -3,13 +3,13 @@
 A [Raindrop.io](https://raindrop.io) extension for the [Tinycast](https://github.com/abue-ammar/tinycast) launcher on macOS. It keeps your bookmarks in a local SQLite database, so search never waits on the network and works offline. Writes go straight to the Raindrop API.
 
 - Type a few letters and open the bookmark you want, from a local full-text index over titles, links, tags, notes, excerpts and highlights
-- Save a link in one line: `https://example.com #read ~Dev !fav`
+- Save a link with Add Bookmark and fetch its title and description before saving
 - Edit, move, tag, favorite or delete from the keyboard, and undo with `⌘Z`
 - Bookmarks you open often rank first
 
 ## Status
 
-Built, not yet checked on a Mac. All four commands exist, and `pnpm typecheck`, `pnpm test`, `pnpm build` and `pnpm smoke` pass on Linux, where the smoke run drives the bundles through Tinycast's JavaScript runtime against a fake Raindrop server. The check in real Tinycast on macOS 26 (the rendered look, the Keychain, the macOS `sqlite3`, and the query time on a real library) is still to do, in [issue #2](https://github.com/mimukit/tinydrop/issues/2). The v1 plan is [docs/plans/0001-plan-tinydrop-features-2026-11-04.md](docs/plans/0001-plan-tinydrop-features-2026-11-04.md).
+Built, not yet checked on a Mac. All three commands exist, and `pnpm typecheck`, `pnpm test`, `pnpm build` and `pnpm smoke` pass on Linux, where the smoke run drives the bundles through Tinycast's JavaScript runtime against a fake Raindrop server. The check in real Tinycast on macOS 26 (the rendered look, the Keychain, the macOS `sqlite3`, and the query time on a real library) is still to do, in [issue #2](https://github.com/mimukit/tinydrop/issues/2). The v1 plan is [docs/plans/0001-plan-tinydrop-features-2026-11-04.md](docs/plans/0001-plan-tinydrop-features-2026-11-04.md).
 
 ## Install
 
@@ -49,7 +49,6 @@ The token goes in your login Keychain under the service `tinydrop`, through `/us
 |---------|--------------|
 | Search Bookmarks | Search the local store. An empty search lists the bookmarks you open most, then the newest. A dropdown in the search bar filters by collection. Account and the sync actions live here. |
 | Add Bookmark | A form with the URL from the clipboard, title, note, collection (the last one you used), tags, new tags and favorite. Raindrop fills in the title, excerpt and cover it finds on the page. |
-| Quick Add | Type one line, check the preview row, press `↵`. Takes an optional `text` argument from the root search. |
 | Sync | Fetch the changes since the last sync and show the counts in a HUD, such as "Synced 37 changes, 2 removed". |
 
 Two preferences control refresh on open. "Refresh on open" (off by default) runs a sync when Search Bookmarks opens and the last sync is older than "Stale after": 1 hour, 6 hours or 1 day (default 1 day).
@@ -70,20 +69,9 @@ Terms combine with AND, and so do `in:` and the collection dropdown. An unknown 
 
 Type `#` to show up to ten stored tags. Type more letters to narrow the suggestions by prefix. Select a tag with the arrow keys and press Enter to insert it. The search keeps earlier filters and quotes tag names that contain spaces. Suggestions use the local store and work offline.
 
-## Quick Add syntax
+## Add Bookmark page details
 
-| Write | Example | Result |
-|-------|---------|--------|
-| A URL | `https://example.com/a` | The link: the first `http` or `https` token. With no URL in the line, the clipboard URL. With neither, the save is blocked. |
-| A tag | `#read`, `#"long tag"` | Tag, new ones allowed |
-| A collection | `~Dev`, `~"Side projects"` | That collection, exact title first, then a unique prefix. An unknown or ambiguous name blocks the save. |
-| A favorite | `!fav` | Marked as favorite |
-| An escape | `\#1` | A literal `#` in the title |
-| Anything else | `a good read` | The title. Left empty, Raindrop fills it in. |
-
-With no collection, the bookmark goes to Unsorted. While you type `~`, rows suggest collection names, and `↵` on a suggestion inserts it. If the link is already saved, the preview says where ("Already saved in Dev"); the first `↵` warns and the second saves it again. Links compare with a lowercase host, no trailing `/` and no `utm_*` parameters.
-
-While you type `#`, rows suggest stored tags. Type more letters to narrow the suggestions by prefix. Select a tag row and press Enter to insert it. Quick Add keeps the URL and other tokens. You can still type a new tag without selecting a suggestion.
+Enter a URL in Add Bookmark. Press `⌘R` or select Fetch Page Details from Actions. The form uses Raindrop's read-only URL parser to fill empty Title and Description fields. Existing text stays unchanged. You can edit both fields before saving. Description saves as the bookmark excerpt; Note stays separate. Fetching requires a network connection and a valid token. Fetching does not save a bookmark.
 
 ## Keys on a bookmark row
 
@@ -101,7 +89,6 @@ While you type `#`, rows suggest stored tags. Type more letters to narrow the su
 | `⌘⌫` | Move to Trash, after a confirmation |
 | `⌘Z` | Undo the last change (up to 10, while the window is open). Shows only when there is something to undo. |
 | `⌘N` | Add Bookmark |
-| `⌘⇧N` | Quick Add |
 | `⌘R` | Sync |
 | `⌘⇧R` | Full resync, after a confirmation |
 | `⌘⇧A` | Account |

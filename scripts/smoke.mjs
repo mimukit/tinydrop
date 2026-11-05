@@ -84,6 +84,11 @@ function fakeRaindrop(calls) {
     });
     if (!GOOD_TOKENS.has(auth.replace(/^Bearer /, ""))) return reply(401, { result: false, error: "Unauthorized" });
     const p = url.pathname.replace("/rest/v1", "");
+    if (p === "/import/url/parse") {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (url.searchParams.get("url")?.includes("/failure")) return reply(200, { result: false });
+      return reply(200, { result: true, item: { title: "Fetched title", excerpt: "Fetched description" } });
+    }
     if (p === "/user") return reply(200, { result: true, user: USER });
     const page = Number(url.searchParams.get("page") ?? 0), perpage = Number(url.searchParams.get("perpage") ?? 50);
     const pageOf = (items) => ({ result: true, items: items.slice(page * perpage, (page + 1) * perpage), count: items.length });
@@ -598,7 +603,7 @@ async function flowRowWritesAndUndo() {
   return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
     await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
     const actions = rowActions(ctx);
-    for (const want of ["Edit Bookmark cmd+e", "Move to Collection… cmd+m", "Toggle Tag… cmd+t", "Move to Trash cmd+backspace", "Add Bookmark cmd+n", "Quick Add cmd+shift+n"]) {
+    for (const want of ["Edit Bookmark cmd+e", "Move to Collection… cmd+m", "Toggle Tag… cmd+t", "Move to Trash cmd+backspace", "Add Bookmark cmd+n"]) {
       assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
     }
     assert.ok(actions.some((a) => / cmd\+f$/.test(a) && /Favorites/.test(a)), `a ⌘F favorite action: ${actions}`);
@@ -671,68 +676,11 @@ async function flowEditAndTags() {
   }});
 }
 
-// ─── Phase 7: Add Bookmark and Quick Add ────────────────────────────
+// ─── Phase 7: Add Bookmark ────────────────────────────
 
 const posts = (ctx) => ctx.calls.filter((c) => c.startsWith("POST /raindrop ")).map((c) => JSON.parse(c.slice("POST /raindrop ".length)));
 
-/** Phase 7: ⌘⇧N from Search; one POST with the collection, tag and favorite; Search finds the row at once. */
-async function flowQuickAddFromSearch() {
-  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
-    await press(ctx, "Quick Add", 400);
-    await typeSearch(ctx, "https://example.com #read ~Dev !fav");
-    const preview = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.id === "preview")[0];
-    assert.ok(preview, "the live preview row");
-    assert.equal(preview.props.title, "Title from the page", "an empty title is left to pleaseParse");
-    const acc = JSON.stringify(preview.props.accessories);
-    assert.ok(acc.includes('"Dev"') && acc.includes("#read"), `collection and tag in the preview: ${acc}`);
-    await typeSearch(ctx, "https://example.com #read !fav ~D");
-    assert.ok(rowTitles(ctx).includes("~Dev"), `collection autocomplete: ${rowTitles(ctx)}`);
-    await press(ctx, "Insert", 300);
-    assert.equal(findAll(ctx.tree(), (n) => n.type === "List" && n.props?.onSearchTextChange?.$fn).at(-1).props.searchText, "https://example.com #read !fav ~Dev ", "Insert completes the name");
-    await press(ctx, "Save Bookmark", 100);
-    await waitCalls(ctx, 1);
-    await sleep(600);
-    assert.equal(ctx.calls.length, 1, `one request: ${ctx.calls}`);
-    assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "the POST body");
-    await typeSearch(ctx, "example domain");
-    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the new row before any sync");
-    assert.equal(ctx.calls.length, 1, "no sync ran");
-    assert.equal((await storeOf(ctx).getBookmark(900))?.collectionId, 11, "the reply is in the store");
-  }});
-}
-
-/** Phase 7: an unknown ~collection shows an error row and sends no request. */
-async function flowQuickAddUnknownCollection() {
-  return run("quick-add", { seed: searchSeed(), args: { text: "https://example.com ~Nope" }, interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).includes('No collection named "Nope"'), "the error row");
-    await press(ctx, "Save Bookmark", 400);
-    assert.ok(ctx.toasts.some((t) => t.title === 'No collection named "Nope"'), `an error toast: ${JSON.stringify(ctx.toasts)}`);
-    assert.equal(ctx.calls.length, 0, `no request: ${ctx.calls}`);
-  }});
-}
-
-/** Phase 7: a duplicate shows "Already saved in"; the first ↵ warns, the second saves. The clipboard URL fills an empty line. */
-async function flowQuickAddDuplicate() {
-  let failed = await run("quick-add", { seed: searchSeed(), args: { text: "https://EXAMPLE.com/pasta/?utm_source=x Pasta again" }, interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).includes("Already saved in Unsorted"), "the duplicate row");
-    await press(ctx, "Save Bookmark", 400);
-    assert.equal(ctx.calls.length, 0, "the first ↵ only warns");
-    await press(ctx, "Save Bookmark", 100);
-    await waitCalls(ctx, 1);
-    assert.equal(posts(ctx)[0].collection.$id, -1, "no ~ means Unsorted");
-    assert.equal(posts(ctx)[0].title, "Pasta again");
-    await waitFor(() => huds(ctx).length > 0, "the HUD");
-  }});
-  failed += await run("quick-add", { seed: searchSeed(), clipboard: "https://news.example.org/a", interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).includes("Title from the page"), "the preview");
-    const preview = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.id === "preview")[0];
-    assert.equal(preview.props.subtitle, "https://news.example.org/a (clipboard)", "the clipboard URL");
-  }});
-  return failed;
-}
-
-/** Phase 7: the Add Bookmark command: clipboard URL, last collection, duplicate warning, pleaseParse. */
+/** The Add form keeps the last collection and warns about duplicates. */
 async function flowAddBookmarkForm() {
   let failed = await run("add-bookmark", { seed: searchSeed(), clipboard: "https://example.com/new", storage: { lastCollection: "12" }, interact: async (ctx) => {
     await sleep(300);
@@ -750,7 +698,7 @@ async function flowAddBookmarkForm() {
   }});
   failed += await run("add-bookmark", { seed: searchSeed(), clipboard: "https://ziglang.org/comptime/", interact: async (ctx) => {
     await sleep(300);
-    const desc = findAll(ctx.tree(), (n) => n.type === "Form.Description")[0];
+    const desc = findAll(ctx.tree(), (n) => n.type === "Form.Description" && n.props.title === "Duplicate")[0];
     assert.equal(desc?.props.text, "Already saved in Dev", "the duplicate warning");
     await press(ctx, "Save Bookmark", 400);
     assert.equal(ctx.calls.length, 0, "the first submit only warns");
@@ -765,7 +713,7 @@ async function flowAddBookmarkForm() {
 
 /**
  * Phase 8: one window, one store, one fake server. Sign in from an empty Keychain, sync the
- * empty store, search, favorite a row, undo it with ⌘Z, then save a bookmark with Quick Add
+ * empty store, search, favorite a row, undo it with ⌘Z, then save a bookmark with Add Bookmark
  * that Search finds at once. The fake server sees every call in order.
  */
 async function flowEndToEnd() {
@@ -813,15 +761,18 @@ async function flowEndToEnd() {
     assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after the undo");
     assert.equal((await storeOf(ctx).getBookmark(101))?.important, false, "the store row is back");
 
-    // Quick Add, then Search finds the new bookmark.
-    await press(ctx, "Quick Add", 400);
-    await typeSearch(ctx, "https://example.com #read ~Dev !fav");
+    // Add Bookmark, then Search finds the new bookmark.
+    await press(ctx, "Add Bookmark", 400);
+    await setField(ctx, "Form.TextField", "link", "https://example.com");
+    await setField(ctx, "Form.TextField", "newTags", "read");
+    await setField(ctx, "Form.Dropdown", "collection", "11");
+    await setField(ctx, "Form.Checkbox", "important", true);
     await press(ctx, "Save Bookmark", 100);
     await waitCalls(ctx, afterSync + 3);
     await sleep(600);
     assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "one POST");
     await typeSearch(ctx, "example domain");
-    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the Quick Add bookmark");
+    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the Add Bookmark bookmark");
     assert.equal(ctx.calls.length, afterSync + 3, `no other request: ${ctx.calls.slice(afterSync)}`);
   }});
 }
@@ -843,35 +794,6 @@ async function flowTagSuggestions() {
       const completed = findAll(ctx.tree(), (n) => n.type === "List").at(-1);
       assert.equal(completed.props.searchText, 'type:article #"read later" ', "other filters remain and spaces are quoted");
       assert.equal(ctx.calls.length, 0, "tag suggestions make no API requests");
-    },
-  });
-}
-
-async function flowQuickAddTagSuggestions() {
-  return run("quick-add", {
-    seed: searchSeed({ tags: [{ name: "rust", count: 1 }, { name: "read later", count: 1 }] }),
-    interact: async (ctx) => {
-      await typeSearch(ctx, "https://example.com #");
-      assert.ok(rowTitles(ctx).includes("#rust"), "a bare hash shows stored tags");
-      assert.ok(rowTitles(ctx).includes("#read later"), "tags with spaces appear");
-      await typeSearch(ctx, "https://example.com #RU");
-      assert.ok(rowTitles(ctx).includes("#rust"), "prefix matching ignores case");
-      assert.ok(!rowTitles(ctx).includes("#read later"), "the prefix narrows the tags");
-      await press(ctx, "Insert Tag");
-      const searchText = () => findAll(ctx.tree(), (n) => n.type === "List").at(-1).props.searchText;
-      assert.equal(searchText(), "https://example.com #rust ", "selection keeps the URL");
-      assert.ok(!rowTitles(ctx).includes("#rust"), "selection closes suggestions");
-      await typeSearch(ctx, 'https://example.com #rust ~Dev !fav #"read');
-      await press(ctx, "Insert Tag");
-      assert.equal(searchText(), 'https://example.com #rust ~Dev !fav #"read later" ', "selection quotes spaces and keeps other tokens");
-      await typeSearch(ctx, "https://example.com \\#ru");
-      assert.ok(!rowTitles(ctx).includes("#rust"), "an escaped hash stays in the title");
-      await typeSearch(ctx, "https://example.com #new-tag");
-      assert.ok(!rowTitles(ctx).includes("#rust"), "a new tag needs no stored match");
-      assert.equal(ctx.calls.length, 0, "suggestions send no requests");
-      await press(ctx, "Save Bookmark", 100);
-      await waitCalls(ctx, 1);
-      assert.deepEqual(posts(ctx)[0].tags, ["new-tag"], "new tags remain valid");
     },
   });
 }
@@ -898,17 +820,49 @@ async function flowTrashConfirmation() {
   });
 }
 
+async function flowPageDetails() {
+  return run("add-bookmark", { seed: searchSeed(), interact: async (ctx) => {
+    const value = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0]?.props.value;
+    await setField(ctx, "Form.TextField", "link", "invalid");
+    await press(ctx, "Fetch Page Details");
+    assert.equal(ctx.calls.length, 0, "invalid URLs send no request");
+    await setField(ctx, "Form.TextField", "link", "https://example.com/failure");
+    await press(ctx, "Fetch Page Details", 600);
+    assert.ok(toastTitles(ctx).includes("Could not fetch page details"), "parse failure shows a toast");
+    assert.equal(value("Form.TextField", "title"), "", "failure leaves the title unchanged");
+    await setField(ctx, "Form.TextField", "link", "https://example.com/old");
+    await press(ctx, "Fetch Page Details", 50);
+    await setField(ctx, "Form.TextField", "link", "https://example.com/new");
+    await sleep(600);
+    assert.equal(value("Form.TextField", "title"), "", "an old URL reply does not fill the form");
+    await press(ctx, "Fetch Page Details", 600);
+    assert.equal(value("Form.TextField", "title"), "Fetched title");
+    assert.equal(value("Form.TextArea", "excerpt"), "Fetched description");
+    await setField(ctx, "Form.TextField", "title", "My title");
+    await setField(ctx, "Form.TextArea", "excerpt", "My description");
+    await setField(ctx, "Form.TextArea", "note", "My note");
+    await press(ctx, "Fetch Page Details", 600);
+    assert.equal(value("Form.TextField", "title"), "My title", "existing titles stay unchanged");
+    assert.equal(value("Form.TextArea", "excerpt"), "My description", "existing descriptions stay unchanged");
+    assert.ok(ctx.calls.every((call) => call.startsWith("GET /import/url/parse?")), "fetching never creates a bookmark");
+    await press(ctx, "Save Bookmark", 700);
+    assert.equal(posts(ctx)[0].title, "My title");
+    assert.equal(posts(ctx)[0].excerpt, "My description");
+    assert.equal(posts(ctx)[0].note, "My note", "notes stay separate from descriptions");
+  }});
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
   flowSyncCommand, flowSyncFirstAndRejected, flowSearchSync, flowFullResync, flowResyncReminder, flowRefreshOnOpen, flowSearchSyncRejected,
   flowSearchOperators, flowDetailsPanel, flowOpenAndCopy,
   flowRowWritesAndUndo, flowEditAndTags,
-  flowQuickAddFromSearch, flowQuickAddUnknownCollection, flowQuickAddDuplicate, flowAddBookmarkForm,
+  flowAddBookmarkForm,
   flowEndToEnd,
   flowTagSuggestions,
-  flowQuickAddTagSuggestions,
   flowTrashConfirmation,
+  flowPageDetails,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

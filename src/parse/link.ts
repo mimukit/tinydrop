@@ -1,4 +1,4 @@
-// Links for the Add form and Quick Add: the http(s) check, the normalized form
+// Links for the Add form: the http(s) check, the normalized form
 // the duplicate warning compares, and the duplicate lookup. No @raycast/api import.
 import { UNSORTED_COLLECTION } from "../api/types";
 import { collectionPath } from "../search/collections";
