@@ -182,7 +182,7 @@ Each fact has a test, the phase that runs it, a pass rule and a fallback. A phas
 | `PUT` restores from Trash | `PUT /raindrop/{id}` with the probe bookmark's old `collection.$id` | 1 | It returns to Unsorted | Undo of a delete is left out, and `⌘⌫` gets a confirmation |
 | Nonce defeats the server cache | Two GETs of one page with an edit between, with and without `_=` | 1 | With the nonce the edit shows | Already in the design; the probe only confirms it |
 
-### Phase 1: live API probe
+### Phase 1: live API probe (#1)
 
 - Create the local scaffold from tinytick: `package.json`, `tsconfig.json`, `vitest.config.ts`, `.gitignore`, `LICENSE`, `AGENTS.md` (rewritten for tinydrop).
 - Write `scripts/probe.mjs`. It reads the token from an environment variable, never from a file in the repo, and runs each Phase 1 row in "Open facts as tests".
@@ -193,7 +193,7 @@ Each fact has a test, the phase that runs it, a pass rule and a fallback. A phas
 
 Done when: the research note lists a pass or a fallback for each Phase 1 fact, with the measured first-sync network time for the real library and for 10,000, and the probe bookmark no longer exists in Raindrop or its Trash.
 
-### Phase 2: repo, build and harness
+### Phase 2: repo, build and harness (#1)
 
 - Complete the scaffold: `scripts/build.mjs`, `src/manifest.json`, `README.md` with install and keys, `assets/icon.png`, `pnpm build:install`.
 - Copy `scripts/smoke.mjs` and replace the fake TickTick server with a fake Raindrop server (`/user`, `/raindrops/0`, `/raindrops/-99`, `/collections`, `/collections/childrens`, `/tags/0`, `/raindrop`).
@@ -202,7 +202,7 @@ Done when: the research note lists a pass or a fallback for each Phase 1 fact, w
 
 Done when: `pnpm typecheck`, `pnpm test` and `pnpm build` pass, `pnpm build` prints each bundle under 300 KB, and `pnpm smoke <tinycast-checkout>` renders the hello-world command.
 
-### Phase 3: client, auth and store
+### Phase 3: client, auth and store (#1)
 
 - Run `sudo apt install sqlite3` for this session. Add `sqlite3` to the devaloy repo's `Dockerfile` and leave that change uncommitted.
 - Build the Raindrop client in `src/api/`: typed records, the error class, the pacer (2 per second, 429 wait on `X-RateLimit-Reset`), and the nonce on every GET.
@@ -213,7 +213,7 @@ Done when: `pnpm typecheck`, `pnpm test` and `pnpm build` pass, `pnpm build` pri
 
 Done when: `pnpm test` passes for `sqlString()` and `ftsTerm()` with quotes, newlines, `--`, `;` and FTS syntax characters, for an upsert-then-search round trip on the real CLI, and for a schema version change that keeps the `opens` rows. `pnpm smoke` signs in against the fake server and shows the account name.
 
-### Phase 4: sync
+### Phase 4: sync (#1)
 
 - Build `src/sync/` with the incremental planner, the Trash search, the full resync, the resume point in `sync_state`, the collection and tag refresh, and the `opens` cleanup for dropped bookmarks.
 - Build the Sync command with a HUD such as "Synced 37 changes, 2 removed".
@@ -222,7 +222,7 @@ Done when: `pnpm test` passes for `sqlString()` and `ftsTerm()` with quotes, new
 
 Done when: vitest covers the planner against a fake client (stop at the sync mark, Trash dedupe, a 429 mid-run that resumes on the next page, a full resync that removes a missing ID and its `opens` row). A second sync with no changes makes 6 calls or fewer against the fake client. `pnpm smoke` runs the Sync command and checks the HUD text.
 
-### Phase 5: Search Bookmarks
+### Phase 5: Search Bookmarks (#1)
 
 - Build `src/search/` to parse `#tag`, `type:`, `in:collection`, `is:fav`, `-exclude`, `"phrase"` and free text into a query object, and compile it to SQL in `src/store/sql.ts`.
 - Build the list: the 100 ms wait, the row, the collection dropdown, the empty-query list from `opens`, and the last sync time in the navigation title.
@@ -231,7 +231,7 @@ Done when: vitest covers the planner against a fake client (stop at the sync mar
 
 Done when: vitest covers each operator alone and combined, an operator with a quote in it, and the dropdown combined with `in:`. A store test with no client finds a bookmark by a word that occurs only in its highlight. A bookmark opened three times ranks above one opened once for the same query.
 
-### Phase 6: row actions and undo
+### Phase 6: row actions and undo (#1)
 
 - Build the Edit form (link, title, note, collection, tags, favorite), the move picker, the tag picker and the favorite toggle, from the copied `Picker.tsx`.
 - Build delete to Trash with no confirmation.
@@ -240,7 +240,7 @@ Done when: vitest covers each operator alone and combined, an operator with a qu
 
 Done when: `pnpm smoke` favorites, moves and deletes three bookmarks, presses `⌘Z` three times, and the fake server receives the three writes and the three reverting writes in order. A test with a failing client shows the row back in its old state after a favorite.
 
-### Phase 7: Add Bookmark and Quick Add
+### Phase 7: Add Bookmark and Quick Add (#1)
 
 - Build the Add Bookmark form with the clipboard URL, the stored collections and tags, the last used collection, the duplicate warning, and `pleaseParse`.
 - Write the Quick Add parser in `src/parse/` with one unit test per grammar row.
@@ -249,14 +249,14 @@ Done when: `pnpm smoke` favorites, moves and deletes three bookmarks, presses `�
 
 Done when: `pnpm test` passes for every grammar row and for link normalization. In `pnpm smoke`, `https://example.com #read ~Dev !fav` sends one `POST /raindrop` with that collection, tag and `important: true`, and Search finds the new row at once. `https://example.com ~Nope` shows an error and sends no request.
 
-### Phase 8: full smoke
+### Phase 8: full smoke (#1)
 
 - Extend `pnpm smoke` to drive sign-in, sync, search, one row write, undo and Quick Add in one run against the fake Raindrop server.
 - Update `README.md` with the final key map and commands.
 
 Done when: `pnpm typecheck`, `pnpm test`, `pnpm build` and `pnpm smoke` pass in one run, with each bundle under 300 KB.
 
-### Phase 9: Mac acceptance
+### Phase 9: Mac acceptance (#2)
 
 Attended: needs the owner at a Mac on macOS 26 with Tinycast installed, a clone of `mimukit/tinydrop`, and the test token. Every Mac task in the plan is here.
 
