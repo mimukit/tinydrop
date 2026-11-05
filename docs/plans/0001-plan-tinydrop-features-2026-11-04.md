@@ -8,6 +8,8 @@ Quick Add is removed. Add Bookmark is the only command that creates bookmarks. T
 
 Add Bookmark selects the last saved collection if it still exists. Otherwise, it selects Bookmarks, with Unsorted as the fallback. The Tags picker lets you search and select existing tags. A Create Tag action adds a new name to the same picker. Saving the bookmark creates new tags in Raindrop.
 
+Add Bookmark shows a red warning below the URL when it matches a bookmark in the local store. The warning names the stored collection. Save asks for confirmation before it creates another copy. Cancel keeps the form open and sends no request. Each save attempt requires confirmation. This decision replaces the second Enter rule below.
+
 ## Context
 
 I want to find, open and save my Raindrop.io bookmarks from the Tinycast launcher, with no wait on the network. The one Raycast extension for Raindrop, `raindrop-io`, has no local store. It calls the API on every keystroke, and its open issues about speed (#16011), empty collection dropdowns (#26089) and `fetch failed` errors (#25645) all come from that design.

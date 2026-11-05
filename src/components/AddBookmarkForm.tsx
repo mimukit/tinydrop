@@ -1,7 +1,7 @@
 // The Add Bookmark form (the command, and ⌘N in Search). The URL comes from the
 // clipboard when it holds an http(s) URL. The last used collection is kept in
 // LocalStorage. A link already in the store shows "Already saved in <collection>";
-// a second submit saves the duplicate. `pleaseParse` fills title, excerpt and cover.
+// saving another copy needs confirmation. `pleaseParse` fills title, excerpt and cover.
 import {
   Action,
   ActionPanel,
@@ -11,6 +11,7 @@ import {
   LocalStorage,
   Toast,
   closeMainWindow,
+  confirmAlert,
   popToRoot,
   showHUD,
   showToast,
@@ -20,7 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { RaindropClient } from "../api/client";
 import { getAuth } from "../auth/secrets";
 import { UNSORTED_COLLECTION, type RaindropPatch } from "../api/types";
-import { duplicateText, findDuplicate, httpUrl, normalizeLink, type Duplicate } from "../parse/link";
+import { duplicateText, findDuplicate, httpUrl, type Duplicate } from "../parse/link";
 import { defaultCollection } from "../parse/add-form";
 import { mergeTags } from "../parse/tags";
 import { ALL_VALUE, collectionChoices } from "../search/collections";
@@ -53,6 +54,7 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
   const pending = useRef(false);
   const changeLink = (value: string) => {
     request.current++;
+    setDuplicate(undefined);
     setLink(value);
   };
   const [collection, setCollection] = useState(String(UNSORTED_COLLECTION));
@@ -60,7 +62,6 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
   const [tags, setTags] = useState<TagRow[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [duplicate, setDuplicate] = useState<Duplicate | undefined>(undefined);
-  const [warnedFor, setWarnedFor] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(true);
   const [own] = useState(() => writer ?? newWriter());
 
@@ -147,12 +148,22 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
       return;
     }
     // Checked again here, so a submit before the live check answers still warns.
-    const dup = await findDuplicate(await openStore(), url, collections).catch(() => undefined);
-    if (dup && warnedFor !== normalizeLink(url)) {
-      setDuplicate(dup);
-      setWarnedFor(normalizeLink(url));
-      await showToast({ style: Toast.Style.Failure, title: duplicateText(dup), message: "Submit again to save it once more" });
+    let dup: Duplicate | undefined;
+    try {
+      dup = await findDuplicate(await openStore(), url, collections);
+    } catch (error) {
+      await showFailure(error, { title: "Could not check for duplicate bookmarks" });
       return;
+    }
+    if (dup) {
+      setDuplicate(dup);
+      const confirmed = await confirmAlert({
+        title: "Bookmark already exists",
+        message: `${duplicateText(dup)}.\n${dup.row.link}\nSave another copy?`,
+        primaryAction: { title: "Save Duplicate" },
+        dismissAction: { title: "Cancel" },
+      });
+      if (!confirmed) return;
     }
     const target = Number(values.collection ?? collection);
     const patch: RaindropPatch = { link: url, collection: { $id: target }, pleaseParse: {} };
@@ -200,9 +211,11 @@ export function AddBookmarkForm({ writer, onSaved }: { writer?: BookmarkWriter; 
         </ActionPanel>
       }
     >
-      <Form.TextField id="link" title="URL" placeholder="https://" value={link} onChange={changeLink} />
+      <Form.TextField
+        id="link" title="URL" placeholder="https://" value={link} onChange={changeLink}
+        error={duplicate ? `Duplicate bookmark. ${duplicateText(duplicate)}.` : undefined}
+      />
       <Form.Description text="Press ⌘R or use Fetch Page Details to fill empty Title and Description fields." />
-      {duplicate && <Form.Description title="Duplicate" text={duplicateText(duplicate)} />}
       <Form.TextField id="title" title="Title" placeholder="Empty: Raindrop reads it from the page" value={title} onChange={setTitle} />
       <Form.TextArea id="excerpt" title="Description" value={excerpt} onChange={setExcerpt} />
       <Form.TextArea id="note" title="Note" defaultValue="" />

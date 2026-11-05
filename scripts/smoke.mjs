@@ -107,10 +107,12 @@ function fakeRaindrop(calls) {
       // As pleaseParse would: a title and a domain from the page.
       const { pleaseParse: _parse, ...fields } = body ?? {};
       const host = (() => { try { return new URL(fields.link).hostname; } catch { return ""; } })();
-      return reply(200, { result: true, item: {
-        _id: 900, collection: { $id: -1 }, type: "link", created: "2026-11-05T00:00:00.000Z", lastUpdate: "2026-11-05T00:00:00.000Z",
-        ...fields, title: fields.title || "Example Domain", domain: host,
-      } });
+      return reply(200, {
+        result: true, item: {
+          _id: 900, collection: { $id: -1 }, type: "link", created: "2026-11-05T00:00:00.000Z", lastUpdate: "2026-11-05T00:00:00.000Z",
+          ...fields, title: fields.title || "Example Domain", domain: host,
+        }
+      });
     }
     const one = p.match(/^\/raindrop\/(\d+)$/);
     if (one) {
@@ -327,158 +329,186 @@ const sent = (calls, re) => calls.some((c) => re.test(c));
 
 /** Phase 2: with no token, Search renders the sign-in row. */
 async function flowSignedOut() {
-  return run("search-bookmarks", { keychain: {}, interact: async (ctx) => {
-    assert.deepEqual(rowTitles(ctx), ["Sign in with a Raindrop test token"], "the sign-in row");
-  }});
+  return run("search-bookmarks", {
+    keychain: {}, interact: async (ctx) => {
+      assert.deepEqual(rowTitles(ctx), ["Sign in with a Raindrop test token"], "the sign-in row");
+    }
+  });
 }
 
 /** Phase 2: signed in, Search reads the store: the empty query lists every row, a word finds one. */
 async function flowSearch() {
-  return run("search-bookmarks", { seed: true, interact: async (ctx) => {
-    const titles = rowTitles(ctx);
-    assert.ok(titles.includes("Rust ownership explained") && titles.includes("Cooking pasta"), `the store rows: ${titles}`);
-    await typeSearch(ctx, "borrow");
-    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "a word from a highlight finds the row");
-    assert.equal(ctx.calls.length, 0, `search sends no request: ${ctx.calls}`);
-    await press(ctx, "Account");
-    const query = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.title === "Query time")[0];
-    assert.match(query?.props.subtitle ?? "", /^p95 \d+ ms over the last 1 search$/, "Account shows the query p95");
-  }});
+  return run("search-bookmarks", {
+    seed: true, interact: async (ctx) => {
+      const titles = rowTitles(ctx);
+      assert.ok(titles.includes("Rust ownership explained") && titles.includes("Cooking pasta"), `the store rows: ${titles}`);
+      await typeSearch(ctx, "borrow");
+      assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "a word from a highlight finds the row");
+      assert.equal(ctx.calls.length, 0, `search sends no request: ${ctx.calls}`);
+      await press(ctx, "Account");
+      const query = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.title === "Query time")[0];
+      assert.match(query?.props.subtitle ?? "", /^p95 \d+ ms over the last 1 search$/, "Account shows the query p95");
+    }
+  });
 }
 
 /** Phase 3: sign in from Account with a pasted token; the account name renders. */
 async function flowSignIn() {
-  return run("search-bookmarks", { keychain: {}, interact: async (ctx) => {
-    await press(ctx, "Open Account");
-    await press(ctx, "Enter Test Token");
-    await setField(ctx, "Form.PasswordField", "token", "new-token");
-    await press(ctx, "Save Token", 900);
-    assert.equal(ctx.keychain["test-token"], "new-token", "the token is in the Keychain");
-    assert.ok(sent(ctx.calls, /^GET \/user$/), `GET /user checks the token: ${ctx.calls}`);
-    const titles = rowTitles(ctx);
-    assert.ok(titles.includes("Test User"), `Account shows the account name: ${titles}`);
-    const plan = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.title === "Plan")[0];
-    assert.equal(plan?.props.subtitle, "Raindrop free plan", "Account shows the Pro state");
-    assert.ok(ctx.toasts.some((t) => t.title === "Signed in as Test User"), "a success toast");
-  }});
+  return run("search-bookmarks", {
+    keychain: {}, interact: async (ctx) => {
+      await press(ctx, "Open Account");
+      await press(ctx, "Enter Test Token");
+      await setField(ctx, "Form.PasswordField", "token", "new-token");
+      await press(ctx, "Save Token", 900);
+      assert.equal(ctx.keychain["test-token"], "new-token", "the token is in the Keychain");
+      assert.ok(sent(ctx.calls, /^GET \/user$/), `GET /user checks the token: ${ctx.calls}`);
+      const titles = rowTitles(ctx);
+      assert.ok(titles.includes("Test User"), `Account shows the account name: ${titles}`);
+      const plan = findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.title === "Plan")[0];
+      assert.equal(plan?.props.subtitle, "Raindrop free plan", "Account shows the Pro state");
+      assert.ok(ctx.toasts.some((t) => t.title === "Signed in as Test User"), "a success toast");
+    }
+  });
 }
 
 /** Phase 3: a token the server rejects shows "Token rejected". */
 async function flowTokenRejected() {
-  return run("search-bookmarks", { keychain: { "test-token": "revoked" }, interact: async (ctx) => {
-    await press(ctx, "Account", 900);
-    const toast = ctx.toasts.find((t) => t.title === "Token rejected");
-    assert.ok(toast, `a "Token rejected" toast: ${JSON.stringify(ctx.toasts)}`);
-    assert.ok(rowTitles(ctx).includes("Token rejected"), "Account shows the rejected state");
-  }});
+  return run("search-bookmarks", {
+    keychain: { "test-token": "revoked" }, interact: async (ctx) => {
+      await press(ctx, "Account", 900);
+      const toast = ctx.toasts.find((t) => t.title === "Token rejected");
+      assert.ok(toast, `a "Token rejected" toast: ${JSON.stringify(ctx.toasts)}`);
+      assert.ok(rowTitles(ctx).includes("Token rejected"), "Account shows the rejected state");
+    }
+  });
 }
 
 /** Phase 3: sign out deletes the Keychain entry and the database file. */
 async function flowSignOut() {
-  return run("search-bookmarks", { seed: true, interact: async (ctx) => {
-    await press(ctx, "Account", 900);
-    await press(ctx, "Sign Out", 900);
-    assert.equal(ctx.keychain["test-token"], undefined, "the token is gone");
-    assert.equal(existsSync(join(ctx.supportPath, DB_FILE)), false, "the database file is gone");
-  }});
+  return run("search-bookmarks", {
+    seed: true, interact: async (ctx) => {
+      await press(ctx, "Account", 900);
+      await press(ctx, "Sign Out", 900);
+      assert.equal(ctx.keychain["test-token"], undefined, "the token is gone");
+      assert.equal(existsSync(join(ctx.supportPath, DB_FILE)), false, "the database file is gone");
+    }
+  });
 }
 
 /** Phase 4: the Sync command on a store that synced before: one change page, the Trash search, a HUD with the counts. */
 async function flowSyncCommand() {
-  return run("sync", { seed: SYNCED_SEED, interact: async (ctx) => {
-    await waitFor(() => huds(ctx).length > 0, "the HUD");
-    assert.deepEqual(huds(ctx), ["Synced 2 changes, 1 removed"], "the HUD text");
-    const calls = decoded(ctx.calls);
-    assert.ok(calls.length <= 6, `6 calls or fewer: ${calls}`);
-    assert.ok(calls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the change page: ${calls}`);
-    assert.ok(calls.includes("GET /raindrops/-99?perpage=50&page=0&search=lastUpdate:>2026-10-31"), `the Trash search, one day back: ${calls}`);
-    for (const path of ["/collections", "/collections/childrens", "/user", "/tags/0"]) assert.ok(calls.includes(`GET ${path}`), `GET ${path}`);
-    const store = storeOf(ctx);
-    assert.equal((await store.getBookmark(103))?.title, "Zig comptime", "the new bookmark is in the store");
-    assert.equal(await store.getBookmark(104), undefined, "the trashed bookmark is gone");
-    assert.equal(await store.getSyncState("sync_mark"), "2026-11-03T00:00:00.000Z", "the mark moved to the newest change");
-  }});
+  return run("sync", {
+    seed: SYNCED_SEED, interact: async (ctx) => {
+      await waitFor(() => huds(ctx).length > 0, "the HUD");
+      assert.deepEqual(huds(ctx), ["Synced 2 changes, 1 removed"], "the HUD text");
+      const calls = decoded(ctx.calls);
+      assert.ok(calls.length <= 6, `6 calls or fewer: ${calls}`);
+      assert.ok(calls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the change page: ${calls}`);
+      assert.ok(calls.includes("GET /raindrops/-99?perpage=50&page=0&search=lastUpdate:>2026-10-31"), `the Trash search, one day back: ${calls}`);
+      for (const path of ["/collections", "/collections/childrens", "/user", "/tags/0"]) assert.ok(calls.includes(`GET ${path}`), `GET ${path}`);
+      const store = storeOf(ctx);
+      assert.equal((await store.getBookmark(103))?.title, "Zig comptime", "the new bookmark is in the store");
+      assert.equal(await store.getBookmark(104), undefined, "the trashed bookmark is gone");
+      assert.equal(await store.getSyncState("sync_mark"), "2026-11-03T00:00:00.000Z", "the mark moved to the newest change");
+    }
+  });
 }
 
 /** Phase 4: the first Sync is a full one; then the Sync command with a rejected token. */
 async function flowSyncFirstAndRejected() {
-  let failed = await run("sync", { interact: async (ctx) => {
-    await waitFor(() => huds(ctx).length > 0, "the HUD");
-    assert.deepEqual(huds(ctx), ["Synced 3 changes"], "the first sync HUD");
-    assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
-    const names = (await storeOf(ctx).collections()).map((c) => c.title);
-    assert.deepEqual(names.sort(), ["Dev", "Rust"], "the collections are stored");
-  }});
-  failed += await run("sync", { keychain: { "test-token": "revoked" }, interact: async (ctx) => {
-    await waitFor(() => huds(ctx).length > 0, "the HUD");
-    assert.match(huds(ctx)[0], /^Token rejected/, "the 401 HUD");
-  }});
+  let failed = await run("sync", {
+    interact: async (ctx) => {
+      await waitFor(() => huds(ctx).length > 0, "the HUD");
+      assert.deepEqual(huds(ctx), ["Synced 3 changes"], "the first sync HUD");
+      assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
+      const names = (await storeOf(ctx).collections()).map((c) => c.title);
+      assert.deepEqual(names.sort(), ["Dev", "Rust"], "the collections are stored");
+    }
+  });
+  failed += await run("sync", {
+    keychain: { "test-token": "revoked" }, interact: async (ctx) => {
+      await waitFor(() => huds(ctx).length > 0, "the HUD");
+      assert.match(huds(ctx)[0], /^Token rejected/, "the 401 HUD");
+    }
+  });
   return failed;
 }
 
 /** Phase 4: ⌘R in Search shows progress, then the summary, and Search queries the store again. */
 async function flowSearchSync() {
-  return run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
-    await typeSearch(ctx, "comptime");
-    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "no row before the sync");
-    await press(ctx, "Sync Now", 100);
-    await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the sync summary toast");
-    assert.ok(ctx.toasts.some((t) => t.title === "Syncing"), "a progress toast");
-    assert.ok(ctx.updates.some((t) => /^Synced \d+/.test(t.message ?? "")), `a progress line: ${JSON.stringify(ctx.updates)}`);
-    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row after the sync");
-  }});
+  return run("search-bookmarks", {
+    seed: SYNCED_SEED, interact: async (ctx) => {
+      await typeSearch(ctx, "comptime");
+      assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "no row before the sync");
+      await press(ctx, "Sync Now", 100);
+      await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the sync summary toast");
+      assert.ok(ctx.toasts.some((t) => t.title === "Syncing"), "a progress toast");
+      assert.ok(ctx.updates.some((t) => /^Synced \d+/.test(t.message ?? "")), `a progress line: ${JSON.stringify(ctx.updates)}`);
+      await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row after the sync");
+    }
+  });
 }
 
 /** Phase 4: ⌘⇧R asks first, with the estimate, then resyncs every bookmark. */
 async function flowFullResync() {
-  return run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
-    await press(ctx, "Full Resync", 300);
-    assert.equal(ctx.alerts.length, 1, "one confirmation");
-    assert.equal(ctx.alerts[0].title, "Full resync: about 5 calls, 1 minute", "the estimate from the stored total");
-    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
-    assert.equal(await storeOf(ctx).getBookmark(104), undefined, "the bookmark the server lacks is gone");
-    assert.ok((await storeOf(ctx).getSyncState("last_full_sync")) !== undefined, "the full resync time is stored");
-  }});
+  return run("search-bookmarks", {
+    seed: SYNCED_SEED, interact: async (ctx) => {
+      await press(ctx, "Full Resync", 300);
+      assert.equal(ctx.alerts.length, 1, "one confirmation");
+      assert.equal(ctx.alerts[0].title, "Full resync: about 5 calls, 1 minute", "the estimate from the stored total");
+      await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
+      assert.equal(await storeOf(ctx).getBookmark(104), undefined, "the bookmark the server lacks is gone");
+      assert.ok((await storeOf(ctx).getSyncState("last_full_sync")) !== undefined, "the full resync time is stored");
+    }
+  });
 }
 
 /** Phase 4: the 7-day reminder toast; its action resyncs with no confirmation. */
 async function flowResyncReminder() {
   const now = Date.now();
   const state = { sync_mark: SYNCED_MARK, last_sync: String(now), last_full_sync: String(now - 10 * 86_400_000) };
-  return run("search-bookmarks", { seed: { bookmarks: SYNCED_SEED.bookmarks, state }, interact: async (ctx) => {
-    await waitFor(() => ctx.toasts.some((t) => t.title === "Full resync suggested"), "the reminder toast");
-    const toast = ctx.toasts.find((t) => t.title === "Full resync suggested");
-    assert.equal(toast.message, "Last full resync: 10 days ago");
-    assert.equal(toast.primaryAction?.title, "Run Full Resync");
-    runToastAction(ctx, toast.primaryAction);
-    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
-    assert.equal(ctx.alerts.length, 0, "no confirmation from the reminder");
-  }});
+  return run("search-bookmarks", {
+    seed: { bookmarks: SYNCED_SEED.bookmarks, state }, interact: async (ctx) => {
+      await waitFor(() => ctx.toasts.some((t) => t.title === "Full resync suggested"), "the reminder toast");
+      const toast = ctx.toasts.find((t) => t.title === "Full resync suggested");
+      assert.equal(toast.message, "Last full resync: 10 days ago");
+      assert.equal(toast.primaryAction?.title, "Run Full Resync");
+      runToastAction(ctx, toast.primaryAction);
+      await waitFor(() => toastTitles(ctx).includes("Synced 3 changes, 1 removed"), "the full resync summary");
+      assert.equal(ctx.alerts.length, 0, "no confirmation from the reminder");
+    }
+  });
 }
 
 /** Phase 4: refresh on open syncs a stale store when the setting is on, and not when it is off. */
 async function flowRefreshOnOpen() {
-  let failed = await run("search-bookmarks", { seed: SYNCED_SEED, preferences: { refreshOnOpen: true, refreshAge: "1h" }, interact: async (ctx) => {
-    await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the refresh-on-open sync");
-    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row");
-  }});
-  failed += await run("search-bookmarks", { seed: SYNCED_SEED, interact: async (ctx) => {
-    await sleep(500);
-    assert.equal(ctx.calls.length, 0, `no sync with the setting off: ${ctx.calls}`);
-  }});
+  let failed = await run("search-bookmarks", {
+    seed: SYNCED_SEED, preferences: { refreshOnOpen: true, refreshAge: "1h" }, interact: async (ctx) => {
+      await waitFor(() => toastTitles(ctx).includes("Synced 2 changes, 1 removed"), "the refresh-on-open sync");
+      await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the new row");
+    }
+  });
+  failed += await run("search-bookmarks", {
+    seed: SYNCED_SEED, interact: async (ctx) => {
+      await sleep(500);
+      assert.equal(ctx.calls.length, 0, `no sync with the setting off: ${ctx.calls}`);
+    }
+  });
   return failed;
 }
 
 /** Phase 4: ⌘R with a rejected token shows "Token rejected" with Open Account, and the action opens Account. */
 async function flowSearchSyncRejected() {
-  return run("search-bookmarks", { seed: true, keychain: { "test-token": "revoked" }, interact: async (ctx) => {
-    await press(ctx, "Sync Now", 100);
-    await waitFor(() => ctx.toasts.some((t) => t.title === "Token rejected"), "the Token rejected toast");
-    const toast = ctx.toasts.find((t) => t.title === "Token rejected");
-    assert.equal(toast.primaryAction?.title, "Open Account", "the toast offers Open Account");
-    runToastAction(ctx, toast.primaryAction);
-    await waitFor(() => rowTitles(ctx).includes("Enter Test Token") || rowTitles(ctx).includes("Token rejected"), "the Account screen");
-  }});
+  return run("search-bookmarks", {
+    seed: true, keychain: { "test-token": "revoked" }, interact: async (ctx) => {
+      await press(ctx, "Sync Now", 100);
+      await waitFor(() => ctx.toasts.some((t) => t.title === "Token rejected"), "the Token rejected toast");
+      const toast = ctx.toasts.find((t) => t.title === "Token rejected");
+      assert.equal(toast.primaryAction?.title, "Open Account", "the toast offers Open Account");
+      runToastAction(ctx, toast.primaryAction);
+      await waitFor(() => rowTitles(ctx).includes("Enter Test Token") || rowTitles(ctx).includes("Token rejected"), "the Account screen");
+    }
+  });
 }
 
 
@@ -498,85 +528,93 @@ const searchSeed = (extra = {}) => ({
 
 /** Phase 5: operators, the dropdown with in:, type icons, the sync time in the title, no request. */
 async function flowSearchOperators() {
-  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
-    assert.equal(listNode(ctx).props.navigationTitle, "Search Bookmarks · Synced 5 min ago", "the sync time in the title");
-    assert.deepEqual(dropdownTitles(ctx), ["All", "Unsorted", "Dev", "Dev > Rust"], "the dropdown choices");
-    await typeSearch(ctx, "#rust type:article");
-    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "#tag with type:");
-    const row = findAll(ctx.tree(), (n) => n.type === "List.Item")[0];
-    assert.equal(row.props.subtitle, "doc.rust-lang.org", "the domain");
-    assert.ok(JSON.stringify(row.props.icon).includes("paragraph"), `the article icon: ${JSON.stringify(row.props.icon)}`);
-    assert.ok(JSON.stringify(row.props.accessories).includes("#rust #read"), "the tags");
-    await typeSearch(ctx, "is:fav");
-    assert.deepEqual(rowTitles(ctx), ["Cooking pasta"], "is:fav");
-    await typeSearch(ctx, 'in:"dev" -zig');
-    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "in: is the collection itself, minus the excluded word");
-    await typeSearch(ctx, "in:Dev");
-    assert.deepEqual(rowTitles(ctx), ["Zig comptime"], "in:Dev");
-    await pickDropdown(ctx, "Dev > Rust");
-    assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "the dropdown and in: combine with AND");
-    await typeSearch(ctx, "");
-    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "the dropdown alone");
-    await typeSearch(ctx, "in:nope");
-    assert.deepEqual(rowTitles(ctx), ['No collection named "nope"'], "an unknown in: name");
-    assert.equal(ctx.calls.length, 0, `search sends no request: ${ctx.calls}`);
-  }});
+  return run("search-bookmarks", {
+    seed: searchSeed(), interact: async (ctx) => {
+      await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+      assert.equal(listNode(ctx).props.navigationTitle, "Search Bookmarks · Synced 5 min ago", "the sync time in the title");
+      assert.deepEqual(dropdownTitles(ctx), ["All", "Unsorted", "Dev", "Dev > Rust"], "the dropdown choices");
+      await typeSearch(ctx, "#rust type:article");
+      assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "#tag with type:");
+      const row = findAll(ctx.tree(), (n) => n.type === "List.Item")[0];
+      assert.equal(row.props.subtitle, "doc.rust-lang.org", "the domain");
+      assert.ok(JSON.stringify(row.props.icon).includes("paragraph"), `the article icon: ${JSON.stringify(row.props.icon)}`);
+      assert.ok(JSON.stringify(row.props.accessories).includes("#rust #read"), "the tags");
+      await typeSearch(ctx, "is:fav");
+      assert.deepEqual(rowTitles(ctx), ["Cooking pasta"], "is:fav");
+      await typeSearch(ctx, 'in:"dev" -zig');
+      assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "in: is the collection itself, minus the excluded word");
+      await typeSearch(ctx, "in:Dev");
+      assert.deepEqual(rowTitles(ctx), ["Zig comptime"], "in:Dev");
+      await pickDropdown(ctx, "Dev > Rust");
+      assert.deepEqual(rowTitles(ctx), ["No bookmark matches"], "the dropdown and in: combine with AND");
+      await typeSearch(ctx, "");
+      assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "the dropdown alone");
+      await typeSearch(ctx, "in:nope");
+      assert.deepEqual(rowTitles(ctx), ['No collection named "nope"'], "an unknown in: name");
+      assert.equal(ctx.calls.length, 0, `search sends no request: ${ctx.calls}`);
+    }
+  });
 }
 
 /** Phase 5: ⌘I opens the details panel, LocalStorage keeps it, a new launch starts with it open. */
 async function flowDetailsPanel() {
-  let failed = await run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
-    await typeSearch(ctx, "borrow");
-    assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel starts closed");
-    const actions = rowActions(ctx);
-    for (const want of ["Open in Browser", "Show Details cmd+i", "Open in Raindrop cmd+o", "Copy URL cmd+shift+c", "Copy Markdown Link cmd+shift+l", "Sync Now cmd+r", "Full Resync cmd+shift+r", "Account cmd+shift+a"]) {
-      assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+  let failed = await run("search-bookmarks", {
+    seed: searchSeed(), interact: async (ctx) => {
+      await typeSearch(ctx, "borrow");
+      assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel starts closed");
+      const actions = rowActions(ctx);
+      for (const want of ["Open in Browser", "Show Details cmd+i", "Open in Raindrop cmd+o", "Copy URL cmd+shift+c", "Copy Markdown Link cmd+shift+l", "Sync Now cmd+r", "Full Resync cmd+shift+r", "Account cmd+shift+a"]) {
+        assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+      }
+      assert.ok(!actions.some((a) => a.endsWith("cmd+return") || a.endsWith("cmd+enter")), "no ⌘↵ binding");
+      await press(ctx, "Show Details");
+      assert.equal(listNode(ctx).props.isShowingDetail, true, "the panel is open");
+      assert.equal(ctx.storage.showDetail, "1", "LocalStorage keeps the state");
+      const detail = findAll(ctx.tree(), (n) => n.type === "List.Item.Detail")[0];
+      assert.ok(detail, "the row has a detail");
+      assert.match(detail.props.markdown, /> borrow checker/, "the highlight in the panel");
+      const labels = Object.fromEntries(findAll(detail, (n) => n.type === "Detail.Metadata.Label").map((n) => [n.props.title, n.props.text]));
+      assert.equal(labels.Collection, "Dev > Rust", "the collection path");
+      assert.equal(labels.Created, "2026-10-01", "the created date");
+      assert.equal(labels["Last update"], "2026-11-01", "the last-update date");
+      await press(ctx, "Hide Details");
+      assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel closes");
+      assert.equal(ctx.storage.showDetail, "0");
     }
-    assert.ok(!actions.some((a) => a.endsWith("cmd+return") || a.endsWith("cmd+enter")), "no ⌘↵ binding");
-    await press(ctx, "Show Details");
-    assert.equal(listNode(ctx).props.isShowingDetail, true, "the panel is open");
-    assert.equal(ctx.storage.showDetail, "1", "LocalStorage keeps the state");
-    const detail = findAll(ctx.tree(), (n) => n.type === "List.Item.Detail")[0];
-    assert.ok(detail, "the row has a detail");
-    assert.match(detail.props.markdown, /> borrow checker/, "the highlight in the panel");
-    const labels = Object.fromEntries(findAll(detail, (n) => n.type === "Detail.Metadata.Label").map((n) => [n.props.title, n.props.text]));
-    assert.equal(labels.Collection, "Dev > Rust", "the collection path");
-    assert.equal(labels.Created, "2026-10-01", "the created date");
-    assert.equal(labels["Last update"], "2026-11-01", "the last-update date");
-    await press(ctx, "Hide Details");
-    assert.equal(listNode(ctx).props.isShowingDetail, false, "the panel closes");
-    assert.equal(ctx.storage.showDetail, "0");
-  }});
-  failed += await run("search-bookmarks", { seed: searchSeed(), storage: { showDetail: "1" }, interact: async (ctx) => {
-    await waitFor(() => listNode(ctx)?.props.isShowingDetail === true, "the panel open from LocalStorage");
-  }});
+  });
+  failed += await run("search-bookmarks", {
+    seed: searchSeed(), storage: { showDetail: "1" }, interact: async (ctx) => {
+      await waitFor(() => listNode(ctx)?.props.isShowingDetail === true, "the panel open from LocalStorage");
+    }
+  });
   return failed;
 }
 
 /** Phase 5: ↵ opens the link and records an open, which moves the row up the empty-query list; ⌘O, ⌘⇧C, ⌘⇧L. */
 async function flowOpenAndCopy() {
-  return run("search-bookmarks", { seed: searchSeed({ opens: [102] }), interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
-    assert.equal(rowTitles(ctx)[0], "Cooking pasta", "the opened row comes first");
-    await typeSearch(ctx, "zig");
-    await press(ctx, "Open in Browser");
-    assert.deepEqual(ctx.opened, ["https://ziglang.org/comptime"], "the link opens in the browser");
-    const store = storeOf(ctx);
-    assert.equal((await store.getBookmark(103))?.openCount, 1, "the open is recorded");
-    await press(ctx, "Open in Browser");
-    assert.equal((await store.getBookmark(103))?.openCount, 2, "a second open is recorded");
-    assert.equal((await store.topOpened())[0].id, 103, "the empty-query order follows the opens");
-    await press(ctx, "Open in Raindrop");
-    assert.equal(ctx.opened.at(-1), "https://app.raindrop.io/my/11/item/103/web", "the Raindrop web app");
-    assert.equal((await store.getBookmark(103))?.openCount, 2, "⌘O counts no open");
-    await press(ctx, "Copy URL");
-    await press(ctx, "Copy Markdown Link");
-    const texts = ctx.copied.map((c) => (typeof c === "string" ? c : c.text));
-    assert.deepEqual(texts, ["https://ziglang.org/comptime", "[Zig comptime](https://ziglang.org/comptime)"], "the copied text");
-    await typeSearch(ctx, "");
-    assert.equal(rowTitles(ctx)[0], "Zig comptime", "a fresh empty query lists the most opened first");
-  }});
+  return run("search-bookmarks", {
+    seed: searchSeed({ opens: [102] }), interact: async (ctx) => {
+      await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+      assert.equal(rowTitles(ctx)[0], "Cooking pasta", "the opened row comes first");
+      await typeSearch(ctx, "zig");
+      await press(ctx, "Open in Browser");
+      assert.deepEqual(ctx.opened, ["https://ziglang.org/comptime"], "the link opens in the browser");
+      const store = storeOf(ctx);
+      assert.equal((await store.getBookmark(103))?.openCount, 1, "the open is recorded");
+      await press(ctx, "Open in Browser");
+      assert.equal((await store.getBookmark(103))?.openCount, 2, "a second open is recorded");
+      assert.equal((await store.topOpened())[0].id, 103, "the empty-query order follows the opens");
+      await press(ctx, "Open in Raindrop");
+      assert.equal(ctx.opened.at(-1), "https://app.raindrop.io/my/11/item/103/web", "the Raindrop web app");
+      assert.equal((await store.getBookmark(103))?.openCount, 2, "⌘O counts no open");
+      await press(ctx, "Copy URL");
+      await press(ctx, "Copy Markdown Link");
+      const texts = ctx.copied.map((c) => (typeof c === "string" ? c : c.text));
+      assert.deepEqual(texts, ["https://ziglang.org/comptime", "[Zig comptime](https://ziglang.org/comptime)"], "the copied text");
+      await typeSearch(ctx, "");
+      assert.equal(rowTitles(ctx)[0], "Zig comptime", "a fresh empty query lists the most opened first");
+    }
+  });
 }
 
 // ─── Phase 6: row actions and undo ──────────────────────────────────
@@ -600,80 +638,84 @@ const waitCalls = (ctx, n) => waitFor(() => ctx.calls.length >= n, `${n} API cal
  * the three writes and the three reverting writes, in order, and the store is back as it was.
  */
 async function flowRowWritesAndUndo() {
-  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
-    await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
-    const actions = rowActions(ctx);
-    for (const want of ["Edit Bookmark cmd+e", "Move to Collection… cmd+m", "Toggle Tag… cmd+t", "Move to Trash cmd+backspace", "Add Bookmark cmd+n"]) {
-      assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+  return run("search-bookmarks", {
+    seed: searchSeed(), interact: async (ctx) => {
+      await waitFor(() => rowTitles(ctx).length === 3, "the three rows");
+      const actions = rowActions(ctx);
+      for (const want of ["Edit Bookmark cmd+e", "Move to Collection… cmd+m", "Toggle Tag… cmd+t", "Move to Trash cmd+backspace", "Add Bookmark cmd+n"]) {
+        assert.ok(actions.includes(want), `row action "${want}": ${actions}`);
+      }
+      assert.ok(actions.some((a) => / cmd\+f$/.test(a) && /Favorites/.test(a)), `a ⌘F favorite action: ${actions}`);
+      assert.ok(!actions.some((a) => a.startsWith("Undo")), "no Undo before a write");
+
+      await typeSearch(ctx, "rust ownership");
+      await press(ctx, "Add to Favorites", 100);
+      await waitCalls(ctx, 1);
+      assert.ok(hasActionPrefix(ctx, "Undo"), "⌘Z shows once the stack has an entry");
+      assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `the Undo action and key: ${rowActions(ctx)}`);
+
+      await typeSearch(ctx, "pasta");
+      await press(ctx, "Move to Collection…", 300);
+      await setField(ctx, "Form.Dropdown", "choice", "11");
+      await waitCalls(ctx, 2);
+
+      await typeSearch(ctx, "zig");
+      await press(ctx, "Move to Trash", 100);
+      await waitCalls(ctx, 3);
+      await waitFor(() => rowTitles(ctx)[0] === "No bookmark matches", "the trashed row leaves the list");
+
+      for (let i = 0; i < 3; i++) {
+        await pressPrefix(ctx, "Undo", 100);
+        await waitCalls(ctx, 4 + i);
+      }
+      await sleep(300);
+      assert.deepEqual(ctx.calls, [
+        'PUT /raindrop/101 {"important":true}',
+        'PUT /raindrop/102 {"collection":{"$id":11}}',
+        "DELETE /raindrop/103",
+        'PUT /raindrop/103 {"collection":{"$id":11}}',
+        'PUT /raindrop/102 {"collection":{"$id":-1}}',
+        'PUT /raindrop/101 {"important":false}',
+      ], "three writes, then three reverting writes in reverse order");
+      assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after three undos");
+      await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the restored row is back in the list");
+      const store = storeOf(ctx);
+      assert.equal((await store.getBookmark(101))?.important, false, "101 is not a favorite again");
+      assert.deepEqual((await store.getBookmark(101))?.highlights.map((h) => h.text), ["borrow checker"], "the reply keeps the highlight");
+      assert.equal((await store.getBookmark(102))?.collectionId, -1, "102 is back in Unsorted");
+      assert.equal((await store.getBookmark(103))?.collectionId, 11, "103 is back in Dev");
+      const titles = ctx.toasts.map((t) => t.title);
+      for (const want of ["Added to favorites", "Moved to Dev", "Moved to Trash", "Undone: Delete"]) assert.ok(titles.includes(want), `toast "${want}": ${titles}`);
     }
-    assert.ok(actions.some((a) => / cmd\+f$/.test(a) && /Favorites/.test(a)), `a ⌘F favorite action: ${actions}`);
-    assert.ok(!actions.some((a) => a.startsWith("Undo")), "no Undo before a write");
-
-    await typeSearch(ctx, "rust ownership");
-    await press(ctx, "Add to Favorites", 100);
-    await waitCalls(ctx, 1);
-    assert.ok(hasActionPrefix(ctx, "Undo"), "⌘Z shows once the stack has an entry");
-    assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `the Undo action and key: ${rowActions(ctx)}`);
-
-    await typeSearch(ctx, "pasta");
-    await press(ctx, "Move to Collection…", 300);
-    await setField(ctx, "Form.Dropdown", "choice", "11");
-    await waitCalls(ctx, 2);
-
-    await typeSearch(ctx, "zig");
-    await press(ctx, "Move to Trash", 100);
-    await waitCalls(ctx, 3);
-    await waitFor(() => rowTitles(ctx)[0] === "No bookmark matches", "the trashed row leaves the list");
-
-    for (let i = 0; i < 3; i++) {
-      await pressPrefix(ctx, "Undo", 100);
-      await waitCalls(ctx, 4 + i);
-    }
-    await sleep(300);
-    assert.deepEqual(ctx.calls, [
-      'PUT /raindrop/101 {"important":true}',
-      'PUT /raindrop/102 {"collection":{"$id":11}}',
-      "DELETE /raindrop/103",
-      'PUT /raindrop/103 {"collection":{"$id":11}}',
-      'PUT /raindrop/102 {"collection":{"$id":-1}}',
-      'PUT /raindrop/101 {"important":false}',
-    ], "three writes, then three reverting writes in reverse order");
-    assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after three undos");
-    await waitFor(() => rowTitles(ctx).includes("Zig comptime"), "the restored row is back in the list");
-    const store = storeOf(ctx);
-    assert.equal((await store.getBookmark(101))?.important, false, "101 is not a favorite again");
-    assert.deepEqual((await store.getBookmark(101))?.highlights.map((h) => h.text), ["borrow checker"], "the reply keeps the highlight");
-    assert.equal((await store.getBookmark(102))?.collectionId, -1, "102 is back in Unsorted");
-    assert.equal((await store.getBookmark(103))?.collectionId, 11, "103 is back in Dev");
-    const titles = ctx.toasts.map((t) => t.title);
-    for (const want of ["Added to favorites", "Moved to Dev", "Moved to Trash", "Undone: Delete"]) assert.ok(titles.includes(want), `toast "${want}": ${titles}`);
-  }});
+  });
 }
 
 /** Phase 6: ⌘E sends only the changed field; ⌘T toggles a tag off; ⌘Z puts it back. */
 async function flowEditAndTags() {
-  return run("search-bookmarks", { seed: searchSeed(), interact: async (ctx) => {
-    await typeSearch(ctx, "rust ownership");
-    await press(ctx, "Edit Bookmark", 300);
-    const link = findAll(ctx.tree(), (n) => n.type === "Form.TextField" && n.props.id === "link")[0];
-    assert.equal(link?.props.value, "https://doc.rust-lang.org/book/", "the form holds the link");
-    await setField(ctx, "Form.TextField", "title", "The Rust book");
-    await press(ctx, "Save Changes", 100);
-    await waitCalls(ctx, 1);
-    await typeSearch(ctx, "rust book");
-    await press(ctx, "Toggle Tag…", 300);
-    await setField(ctx, "Form.Dropdown", "choice", "read");
-    await waitCalls(ctx, 2);
-    await pressPrefix(ctx, "Undo Tags", 100);
-    await waitCalls(ctx, 3);
-    await sleep(200);
-    assert.deepEqual(ctx.calls, [
-      'PUT /raindrop/101 {"title":"The Rust book"}',
-      'PUT /raindrop/101 {"tags":["rust"]}',
-      'PUT /raindrop/101 {"tags":["rust","read"]}',
-    ], "only the changed fields");
-    assert.equal((await storeOf(ctx).getBookmark(101))?.title, "The Rust book", "the store holds the new title");
-  }});
+  return run("search-bookmarks", {
+    seed: searchSeed(), interact: async (ctx) => {
+      await typeSearch(ctx, "rust ownership");
+      await press(ctx, "Edit Bookmark", 300);
+      const link = findAll(ctx.tree(), (n) => n.type === "Form.TextField" && n.props.id === "link")[0];
+      assert.equal(link?.props.value, "https://doc.rust-lang.org/book/", "the form holds the link");
+      await setField(ctx, "Form.TextField", "title", "The Rust book");
+      await press(ctx, "Save Changes", 100);
+      await waitCalls(ctx, 1);
+      await typeSearch(ctx, "rust book");
+      await press(ctx, "Toggle Tag…", 300);
+      await setField(ctx, "Form.Dropdown", "choice", "read");
+      await waitCalls(ctx, 2);
+      await pressPrefix(ctx, "Undo Tags", 100);
+      await waitCalls(ctx, 3);
+      await sleep(200);
+      assert.deepEqual(ctx.calls, [
+        'PUT /raindrop/101 {"title":"The Rust book"}',
+        'PUT /raindrop/101 {"tags":["rust"]}',
+        'PUT /raindrop/101 {"tags":["rust","read"]}',
+      ], "only the changed fields");
+      assert.equal((await storeOf(ctx).getBookmark(101))?.title, "The Rust book", "the store holds the new title");
+    }
+  });
 }
 
 // ─── Phase 7: Add Bookmark ────────────────────────────
@@ -682,35 +724,47 @@ const posts = (ctx) => ctx.calls.filter((c) => c.startsWith("POST /raindrop ")).
 
 /** The Add form keeps the last collection and warns about duplicates. */
 async function flowAddBookmarkForm() {
-  let failed = await run("add-bookmark", { seed: searchSeed(), clipboard: "https://example.com/new", storage: { lastCollection: "12" }, interact: async (ctx) => {
-    await sleep(300);
-    const field = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0];
-    assert.equal(field("Form.TextField", "link")?.props.value, "https://example.com/new", "the clipboard URL");
-    assert.equal(field("Form.Dropdown", "collection")?.props.value, "12", "the last used collection");
-    await setField(ctx, "Form.Dropdown", "collection", "11");
-    await setField(ctx, "Form.TextField", "title", "New page");
-    await press(ctx, "Create Tag");
-    await setField(ctx, "Form.TextField", "name", "later");
-    await press(ctx, "Add Tag to Bookmark");
-    await press(ctx, "Create Tag");
-    await setField(ctx, "Form.TextField", "name", "read");
-    await press(ctx, "Add Tag to Bookmark");
-    await press(ctx, "Save Bookmark", 100);
-    await waitCalls(ctx, 1);
-    assert.deepEqual(posts(ctx), [{ link: "https://example.com/new", collection: { $id: 11 }, pleaseParse: {}, title: "New page", tags: ["later", "read"] }], "the POST body");
-    await waitFor(() => huds(ctx).length > 0, "the HUD");
-    assert.equal(ctx.storage.lastCollection, "11", "the collection is kept");
-  }});
-  failed += await run("add-bookmark", { seed: searchSeed(), clipboard: "https://ziglang.org/comptime/", interact: async (ctx) => {
-    await sleep(300);
-    const desc = findAll(ctx.tree(), (n) => n.type === "Form.Description" && n.props.title === "Duplicate")[0];
-    assert.equal(desc?.props.text, "Already saved in Dev", "the duplicate warning");
-    await press(ctx, "Save Bookmark", 400);
-    assert.equal(ctx.calls.length, 0, "the first submit only warns");
-    await press(ctx, "Save Bookmark", 100);
-    await waitCalls(ctx, 1);
-    assert.equal(posts(ctx)[0].collection.$id, -1, "Unsorted with no stored collection");
-  }});
+  let failed = await run("add-bookmark", {
+    seed: searchSeed(), clipboard: "https://example.com/new", storage: { lastCollection: "12" }, interact: async (ctx) => {
+      await sleep(300);
+      const field = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0];
+      assert.equal(field("Form.TextField", "link")?.props.value, "https://example.com/new", "the clipboard URL");
+      assert.equal(field("Form.Dropdown", "collection")?.props.value, "12", "the last used collection");
+      await setField(ctx, "Form.Dropdown", "collection", "11");
+      await setField(ctx, "Form.TextField", "title", "New page");
+      await press(ctx, "Create Tag");
+      await setField(ctx, "Form.TextField", "name", "later");
+      await press(ctx, "Add Tag to Bookmark");
+      await press(ctx, "Create Tag");
+      await setField(ctx, "Form.TextField", "name", "read");
+      await press(ctx, "Add Tag to Bookmark");
+      await press(ctx, "Save Bookmark", 100);
+      await waitCalls(ctx, 1);
+      assert.deepEqual(posts(ctx), [{ link: "https://example.com/new", collection: { $id: 11 }, pleaseParse: {}, title: "New page", tags: ["later", "read"] }], "the POST body");
+      await waitFor(() => huds(ctx).length > 0, "the HUD");
+      assert.equal(ctx.storage.lastCollection, "11", "the collection is kept");
+    }
+  });
+  failed += await run("add-bookmark", {
+    seed: searchSeed(), clipboard: "https://ziglang.org/comptime/", confirmations: [false, false, true], interact: async (ctx) => {
+      await sleep(300);
+      const urlField = () => findAll(ctx.tree(), (n) => n.type === "Form.TextField" && n.props.id === "link")[0];
+      assert.equal(urlField()?.props.error, "Duplicate bookmark. Already saved in Dev.", "the URL shows a native colored warning");
+      await setField(ctx, "Form.TextField", "link", "https://example.com/unique");
+      assert.equal(urlField()?.props.error, undefined, "a different URL clears the warning");
+      await setField(ctx, "Form.TextField", "link", "https://ziglang.org/comptime/");
+      await waitFor(() => !!urlField()?.props.error, "the duplicate warning returns");
+      await press(ctx, "Save Bookmark", 400);
+      assert.equal(ctx.alerts[0]?.title, "Bookmark already exists", "Save shows a duplicate confirmation");
+      assert.ok(ctx.alerts[0]?.message.includes("Already saved in Dev"), "the confirmation names the collection");
+      assert.equal(ctx.calls.length, 0, "Cancel sends no request");
+      await press(ctx, "Save Bookmark", 100);
+      assert.equal(ctx.calls.length, 0, "another submit still needs confirmation");
+      await press(ctx, "Save Bookmark", 100);
+      await waitCalls(ctx, 1);
+      assert.equal(posts(ctx)[0].collection.$id, -1, "Unsorted with no stored collection");
+    }
+  });
   return failed;
 }
 
@@ -722,66 +776,68 @@ async function flowAddBookmarkForm() {
  * that Search finds at once. The fake server sees every call in order.
  */
 async function flowEndToEnd() {
-  return run("search-bookmarks", { keychain: {}, interact: async (ctx) => {
-    // Sign in.
-    assert.deepEqual(rowTitles(ctx), ["Sign in with a Raindrop test token"], "the sign-in row");
-    await press(ctx, "Open Account");
-    await press(ctx, "Enter Test Token");
-    await setField(ctx, "Form.PasswordField", "token", "new-token");
-    await press(ctx, "Save Token", 900);
-    assert.equal(ctx.keychain["test-token"], "new-token", "the token is in the Keychain");
-    await waitFor(() => rowTitles(ctx).includes("Test User"), "the account name");
-    ctx.harness.call('__tinycast.popNavigation("s1")');
-    await sleep(500);
-    await waitFor(() => rowTitles(ctx).includes("No bookmarks yet"), "Search, signed in, with an empty store");
-    const afterSignIn = ctx.calls.length;
-    assert.ok(ctx.calls.every((c) => c === "GET /user"), `sign-in calls only GET /user: ${ctx.calls}`);
+  return run("search-bookmarks", {
+    keychain: {}, interact: async (ctx) => {
+      // Sign in.
+      assert.deepEqual(rowTitles(ctx), ["Sign in with a Raindrop test token"], "the sign-in row");
+      await press(ctx, "Open Account");
+      await press(ctx, "Enter Test Token");
+      await setField(ctx, "Form.PasswordField", "token", "new-token");
+      await press(ctx, "Save Token", 900);
+      assert.equal(ctx.keychain["test-token"], "new-token", "the token is in the Keychain");
+      await waitFor(() => rowTitles(ctx).includes("Test User"), "the account name");
+      ctx.harness.call('__tinycast.popNavigation("s1")');
+      await sleep(500);
+      await waitFor(() => rowTitles(ctx).includes("No bookmarks yet"), "Search, signed in, with an empty store");
+      const afterSignIn = ctx.calls.length;
+      assert.ok(ctx.calls.every((c) => c === "GET /user"), `sign-in calls only GET /user: ${ctx.calls}`);
 
-    // Sync: the first one is a full one.
-    await press(ctx, "Sync Now", 100);
-    await waitFor(() => toastTitles(ctx).includes("Synced 3 changes"), "the first sync summary");
-    await waitFor(() => rowTitles(ctx).length === 3, "the three synced rows");
-    assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
-    const syncCalls = decoded(ctx.calls.slice(afterSignIn));
-    assert.ok(syncCalls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the sync pages the server: ${syncCalls}`);
-    assert.ok(syncCalls.every((c) => c.startsWith("GET ")), `the sync only reads: ${syncCalls}`);
+      // Sync: the first one is a full one.
+      await press(ctx, "Sync Now", 100);
+      await waitFor(() => toastTitles(ctx).includes("Synced 3 changes"), "the first sync summary");
+      await waitFor(() => rowTitles(ctx).length === 3, "the three synced rows");
+      assert.equal(await storeOf(ctx).count(), 3, "the store holds every server bookmark");
+      const syncCalls = decoded(ctx.calls.slice(afterSignIn));
+      assert.ok(syncCalls.includes("GET /raindrops/0?sort=-lastUpdate&perpage=50&page=0"), `the sync pages the server: ${syncCalls}`);
+      assert.ok(syncCalls.every((c) => c.startsWith("GET ")), `the sync only reads: ${syncCalls}`);
 
-    // Search.
-    await typeSearch(ctx, "rust owner");
-    assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "search finds the row");
-    const afterSync = ctx.calls.length;
+      // Search.
+      await typeSearch(ctx, "rust owner");
+      assert.deepEqual(rowTitles(ctx), ["Rust ownership explained"], "search finds the row");
+      const afterSync = ctx.calls.length;
 
-    // One row write, then ⌘Z.
-    assert.ok(rowActions(ctx).includes("Add to Favorites cmd+f"), `⌘F on the row: ${rowActions(ctx)}`);
-    await press(ctx, "Add to Favorites", 100);
-    await waitCalls(ctx, afterSync + 1);
-    assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `⌘Z after the write: ${rowActions(ctx)}`);
-    await pressPrefix(ctx, "Undo", 100);
-    await waitCalls(ctx, afterSync + 2);
-    await sleep(200);
-    assert.deepEqual(ctx.calls.slice(afterSync), [
-      'PUT /raindrop/101 {"important":true}',
-      'PUT /raindrop/101 {"important":false}',
-    ], "the write, then the reverting write");
-    assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after the undo");
-    assert.equal((await storeOf(ctx).getBookmark(101))?.important, false, "the store row is back");
+      // One row write, then ⌘Z.
+      assert.ok(rowActions(ctx).includes("Add to Favorites cmd+f"), `⌘F on the row: ${rowActions(ctx)}`);
+      await press(ctx, "Add to Favorites", 100);
+      await waitCalls(ctx, afterSync + 1);
+      assert.ok(rowActions(ctx).includes("Undo Favorite cmd+z"), `⌘Z after the write: ${rowActions(ctx)}`);
+      await pressPrefix(ctx, "Undo", 100);
+      await waitCalls(ctx, afterSync + 2);
+      await sleep(200);
+      assert.deepEqual(ctx.calls.slice(afterSync), [
+        'PUT /raindrop/101 {"important":true}',
+        'PUT /raindrop/101 {"important":false}',
+      ], "the write, then the reverting write");
+      assert.ok(!hasActionPrefix(ctx, "Undo"), "the stack is empty after the undo");
+      assert.equal((await storeOf(ctx).getBookmark(101))?.important, false, "the store row is back");
 
-    // Add Bookmark, then Search finds the new bookmark.
-    await press(ctx, "Add Bookmark", 400);
-    await setField(ctx, "Form.TextField", "link", "https://example.com");
-    await press(ctx, "Create Tag");
-    await setField(ctx, "Form.TextField", "name", "read");
-    await press(ctx, "Add Tag to Bookmark");
-    await setField(ctx, "Form.Dropdown", "collection", "11");
-    await setField(ctx, "Form.Checkbox", "important", true);
-    await press(ctx, "Save Bookmark", 100);
-    await waitCalls(ctx, afterSync + 3);
-    await sleep(600);
-    assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "one POST");
-    await typeSearch(ctx, "example domain");
-    assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the Add Bookmark bookmark");
-    assert.equal(ctx.calls.length, afterSync + 3, `no other request: ${ctx.calls.slice(afterSync)}`);
-  }});
+      // Add Bookmark, then Search finds the new bookmark.
+      await press(ctx, "Add Bookmark", 400);
+      await setField(ctx, "Form.TextField", "link", "https://example.com");
+      await press(ctx, "Create Tag");
+      await setField(ctx, "Form.TextField", "name", "read");
+      await press(ctx, "Add Tag to Bookmark");
+      await setField(ctx, "Form.Dropdown", "collection", "11");
+      await setField(ctx, "Form.Checkbox", "important", true);
+      await press(ctx, "Save Bookmark", 100);
+      await waitCalls(ctx, afterSync + 3);
+      await sleep(600);
+      assert.deepEqual(posts(ctx), [{ link: "https://example.com", collection: { $id: 11 }, pleaseParse: {}, tags: ["read"], important: true }], "one POST");
+      await typeSearch(ctx, "example domain");
+      assert.deepEqual(rowTitles(ctx), ["Example Domain"], "Search finds the Add Bookmark bookmark");
+      assert.equal(ctx.calls.length, afterSync + 3, `no other request: ${ctx.calls.slice(afterSync)}`);
+    }
+  });
 }
 
 async function flowTagSuggestions() {
@@ -828,35 +884,37 @@ async function flowTrashConfirmation() {
 }
 
 async function flowPageDetails() {
-  return run("add-bookmark", { seed: searchSeed(), interact: async (ctx) => {
-    const value = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0]?.props.value;
-    await setField(ctx, "Form.TextField", "link", "invalid");
-    await press(ctx, "Fetch Page Details");
-    assert.equal(ctx.calls.length, 0, "invalid URLs send no request");
-    await setField(ctx, "Form.TextField", "link", "https://example.com/failure");
-    await press(ctx, "Fetch Page Details", 600);
-    assert.ok(toastTitles(ctx).includes("Could not fetch page details"), "parse failure shows a toast");
-    assert.equal(value("Form.TextField", "title"), "", "failure leaves the title unchanged");
-    await setField(ctx, "Form.TextField", "link", "https://example.com/old");
-    await press(ctx, "Fetch Page Details", 50);
-    await setField(ctx, "Form.TextField", "link", "https://example.com/new");
-    await sleep(600);
-    assert.equal(value("Form.TextField", "title"), "", "an old URL reply does not fill the form");
-    await press(ctx, "Fetch Page Details", 600);
-    assert.equal(value("Form.TextField", "title"), "Fetched title");
-    assert.equal(value("Form.TextArea", "excerpt"), "Fetched description");
-    await setField(ctx, "Form.TextField", "title", "My title");
-    await setField(ctx, "Form.TextArea", "excerpt", "My description");
-    await setField(ctx, "Form.TextArea", "note", "My note");
-    await press(ctx, "Fetch Page Details", 600);
-    assert.equal(value("Form.TextField", "title"), "My title", "existing titles stay unchanged");
-    assert.equal(value("Form.TextArea", "excerpt"), "My description", "existing descriptions stay unchanged");
-    assert.ok(ctx.calls.every((call) => call.startsWith("GET /import/url/parse?")), "fetching never creates a bookmark");
-    await press(ctx, "Save Bookmark", 700);
-    assert.equal(posts(ctx)[0].title, "My title");
-    assert.equal(posts(ctx)[0].excerpt, "My description");
-    assert.equal(posts(ctx)[0].note, "My note", "notes stay separate from descriptions");
-  }});
+  return run("add-bookmark", {
+    seed: searchSeed(), interact: async (ctx) => {
+      const value = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id)[0]?.props.value;
+      await setField(ctx, "Form.TextField", "link", "invalid");
+      await press(ctx, "Fetch Page Details");
+      assert.equal(ctx.calls.length, 0, "invalid URLs send no request");
+      await setField(ctx, "Form.TextField", "link", "https://example.com/failure");
+      await press(ctx, "Fetch Page Details", 600);
+      assert.ok(toastTitles(ctx).includes("Could not fetch page details"), "parse failure shows a toast");
+      assert.equal(value("Form.TextField", "title"), "", "failure leaves the title unchanged");
+      await setField(ctx, "Form.TextField", "link", "https://example.com/old");
+      await press(ctx, "Fetch Page Details", 50);
+      await setField(ctx, "Form.TextField", "link", "https://example.com/new");
+      await sleep(600);
+      assert.equal(value("Form.TextField", "title"), "", "an old URL reply does not fill the form");
+      await press(ctx, "Fetch Page Details", 600);
+      assert.equal(value("Form.TextField", "title"), "Fetched title");
+      assert.equal(value("Form.TextArea", "excerpt"), "Fetched description");
+      await setField(ctx, "Form.TextField", "title", "My title");
+      await setField(ctx, "Form.TextArea", "excerpt", "My description");
+      await setField(ctx, "Form.TextArea", "note", "My note");
+      await press(ctx, "Fetch Page Details", 600);
+      assert.equal(value("Form.TextField", "title"), "My title", "existing titles stay unchanged");
+      assert.equal(value("Form.TextArea", "excerpt"), "My description", "existing descriptions stay unchanged");
+      assert.ok(ctx.calls.every((call) => call.startsWith("GET /import/url/parse?")), "fetching never creates a bookmark");
+      await press(ctx, "Save Bookmark", 700);
+      assert.equal(posts(ctx)[0].title, "My title");
+      assert.equal(posts(ctx)[0].excerpt, "My description");
+      assert.equal(posts(ctx)[0].note, "My note", "notes stay separate from descriptions");
+    }
+  });
 }
 
 async function flowAddDefaultsAndTags() {
