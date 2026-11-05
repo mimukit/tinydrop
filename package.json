@@ -7,9 +7,13 @@
   "type": "module",
   "packageManager": "pnpm@12.9.1",
   "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:install": "node scripts/build.mjs --install",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke": "node scripts/smoke.mjs",
+    "bench": "node scripts/bench.mjs",
     "probe": "node scripts/probe.mjs"
   },
   "devDependencies": {

@@ -89,7 +89,7 @@ Browse Collections, Unsorted triage and a random bookmark command are planned fo
 
 ## Development
 
-The build follows [tinytick](https://github.com/mimukit/tinytick): pnpm, TypeScript, esbuild and Vitest, with no Raycast CLI. Once it lands, the commands will be:
+The build follows [tinytick](https://github.com/mimukit/tinytick): pnpm, TypeScript, esbuild and Vitest, with no Raycast CLI. The commands:
 
 ```sh
 pnpm install
@@ -99,6 +99,8 @@ pnpm build:install       # copies dist/ into Tinycast's extensions folder (macOS
 pnpm smoke ../tinycast   # runs the bundles in Tinycast's JS runtime against a fake Raindrop
 pnpm bench               # p50 and p95 query time on 10,000 seeded bookmarks
 ```
+
+The store uses `/usr/bin/sqlite3`. Set `TINYDROP_SQLITE3` to use another binary. `pnpm build:install` honors `TINYCAST_BUNDLE_ID` and `TINYCAST_EXT_DIR`. `pnpm smoke` answers `/usr/bin/security` from memory, so it never touches the Keychain.
 
 ## License
 

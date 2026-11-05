@@ -1,0 +1,73 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "tinydrop",
+  "title": "Tinydrop",
+  "description": "Search, open and save Raindrop.io bookmarks from an offline store. No wait on the network.",
+  "icon": "icon.png",
+  "author": "mimukit",
+  "categories": ["Productivity"],
+  "license": "MIT",
+  "platforms": ["macOS"],
+  "commands": [
+    {
+      "name": "search-bookmarks",
+      "title": "Search Bookmarks",
+      "subtitle": "Raindrop",
+      "description": "Search the offline bookmark store, open a bookmark, and run row actions.",
+      "mode": "view"
+    },
+    {
+      "name": "add-bookmark",
+      "title": "Add Bookmark",
+      "subtitle": "Raindrop",
+      "description": "Save a bookmark with a form. The URL comes from the clipboard.",
+      "mode": "view"
+    },
+    {
+      "name": "quick-add",
+      "title": "Quick Add",
+      "subtitle": "Raindrop",
+      "description": "Save a bookmark in one line: url #tag ~collection !fav",
+      "mode": "view",
+      "arguments": [
+        {
+          "name": "text",
+          "type": "text",
+          "placeholder": "https://example.com #read ~Dev !fav",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "sync",
+      "title": "Sync",
+      "subtitle": "Raindrop",
+      "description": "Pull the changes from Raindrop into the offline store.",
+      "mode": "no-view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "refreshOnOpen",
+      "title": "Refresh on open",
+      "label": "Sync when the store is stale",
+      "description": "Run a sync when Search Bookmarks opens and the last sync is older than the age below.",
+      "type": "checkbox",
+      "required": false,
+      "default": false
+    },
+    {
+      "name": "refreshAge",
+      "title": "Stale after",
+      "description": "The age at which Refresh on open runs a sync.",
+      "type": "dropdown",
+      "required": false,
+      "default": "1d",
+      "data": [
+        { "title": "1 hour", "value": "1h" },
+        { "title": "6 hours", "value": "6h" },
+        { "title": "1 day", "value": "1d" }
+      ]
+    }
+  ]
+}
