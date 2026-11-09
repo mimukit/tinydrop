@@ -12,6 +12,7 @@ import {
   List,
   LocalStorage,
   Toast,
+  closeMainWindow,
   confirmAlert,
   getPreferenceValues,
   open,
@@ -286,6 +287,8 @@ export function SearchView() {
       await (await openStore()).recordOpen(row.id);
     } catch (error) {
       await showFailure(error, { title: "Could not count the open" });
+    } finally {
+      await closeMainWindow();
     }
   };
 
