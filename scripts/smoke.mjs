@@ -11,7 +11,7 @@
 //
 // Each flow is one async function in FLOWS. A later phase adds a flow there.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -82,7 +82,7 @@ function fakeRaindrop(calls, server = {}, linkCalls = []) {
       linkCalls.push(`${spec.method} ${spec.url}`);
       const answer = server.links?.[spec.url];
       if (!answer) throw new Error(`fake link server: no answer for ${spec.url}`);
-      const { status, url } = answer(spec.method, spec.headers ?? {});
+      const { status, url } = await answer(spec.method, spec.headers ?? {});
       return { status, statusText: String(status), headers: { "content-type": "text/html" }, url: url ?? spec.url, bodyBase64: "" };
     }
     const url = new URL(spec.url);
@@ -1035,10 +1035,15 @@ const DUPLICATE_ITEMS = [
  */
 async function flowCleanupDuplicates() {
   return run("clean-up-bookmarks", {
-    seed: { bookmarks: DUPLICATE_ITEMS, state: { last_sync: String(Date.now() - 3 * 3_600_000) } },
+    seed: {
+      bookmarks: DUPLICATE_ITEMS,
+      state: { last_sync: String(Date.now() - 3 * 3_600_000) },
+      checks: DUPLICATE_ITEMS.map((b) => ({ bookmarkId: b._id, url: b.link, class: "ok", status: 200, reason: "HTTP 200", checkedAt: Date.now() })),
+    },
     server: { items: DUPLICATE_ITEMS },
     interact: async (ctx) => {
       assert.deepEqual(dropdownTitles(ctx), ["Duplicates", "Dead Links", "Unsure", "Skipped", "Ignored Hosts"], "the dropdown entries");
+      await pickDropdown(ctx, "Duplicates");
       await waitFor(() => rowTitles(ctx).length === 5, `five groups: ${rowTitles(ctx)}`);
       assert.deepEqual(rowTitles(ctx), ["Beta 211", "Alpha 201", "Delta 231", "Eps 241", "Gamma 221"], "each group shows its keeper title");
       assert.deepEqual(accessoryTexts(ctx, "Beta 211"), ["3 bookmarks"], "each group shows its count");
@@ -1140,7 +1145,9 @@ async function flowCleanupDeadLinks() {
     },
     server: { items: CHECK_ITEMS, links: CHECK_LINKS },
     interact: async (ctx) => {
-      assert.equal(ctx.linkCalls.length, 0, "the Duplicates view sends no link check");
+      const dropdown = findAll(ctx.tree(), (n) => n.type === "List.Dropdown").at(-1);
+      assert.equal(dropdown.props.value, "duplicates", "Duplicates is the default view");
+      assert.equal(ctx.linkCalls.length, 0, "the default view sends no link check");
       await pickDropdown(ctx, "Dead Links");
       await waitFor(() => toastTitles(ctx).includes("Waiting to retry 1 dead link"), `the waiting state: ${toastTitles(ctx)}`);
       const titles = toastTitles(ctx);
@@ -1222,6 +1229,149 @@ async function flowCleanupDeadLinks() {
   });
 }
 
+async function flowCleanupMarkLive() {
+  const now = Date.now();
+  const bookmark = cleanupItem(402, "https://blocked.test/page", "Blocked page", 11);
+  let finishRequest;
+  const response = new Promise((resolve) => { finishRequest = resolve; });
+  try {
+    return await run("clean-up-bookmarks", {
+      seed: {
+        bookmarks: [bookmark], state: { last_sync: String(now) },
+        checks: [{ bookmarkId: 402, url: bookmark.link, class: "unsure", status: 403, reason: "HTTP 403", checkedAt: now - 31 * 86_400_000 }],
+      },
+      server: { links: { [bookmark.link]: () => response } },
+      interact: async (ctx) => {
+        await pickDropdown(ctx, "Unsure");
+        await waitFor(() => ctx.linkCalls.length === 1, "the scan starts a request for the old result");
+        const action = findAll(itemTitled(ctx, bookmark.title), (n) => n.props?.title === "Mark as Live")[0];
+        assert.deepEqual(action?.props.shortcut, { modifiers: ["cmd"], key: "l" });
+        await pressIn(ctx, bookmark.title, "Open");
+        assert.deepEqual(ctx.opened, [bookmark.link], "the owner can inspect the link first");
+        await pressIn(ctx, bookmark.title, "Mark as Live");
+        await waitFor(() => !rowTitles(ctx).includes(bookmark.title), "the manually approved link leaves Unsure");
+        assert.ok(toastTitles(ctx).includes("Marked as live"));
+        finishRequest({ status: 403 });
+        await waitFor(() => !listNode(ctx).props.isLoading, "the scan finishes");
+        const [saved] = await storeOf(ctx).linkChecks();
+        assert.equal(saved.class, "ok", "the late scan result cannot replace the manual decision");
+        assert.equal(saved.reason, "Marked as live by you");
+        assert.equal(saved.status, undefined, "manual approval does not invent an HTTP result");
+        assert.ok(saved.checkedAt >= now);
+        assert.equal((await storeOf(ctx).getBookmark(402)).collectionId, 11, "the bookmark stays in its collection");
+        assert.equal(ctx.calls.length, 0, "the action sends no Raindrop request");
+        await pickDropdown(ctx, "Dead Links");
+        await pickDropdown(ctx, "Unsure");
+        assert.ok(!rowTitles(ctx).includes(bookmark.title), "the decision remains after a view change");
+      },
+    });
+  } finally {
+    finishRequest({ status: 403 });
+  }
+}
+
+async function flowCleanupEditLinks() {
+  let failures = 0;
+  for (const [view, classification] of [["Dead Links", "dead"], ["Unsure", "unsure"], ["Dead Links", "pending"]]) {
+    const now = Date.now();
+    const bookmark = cleanupItem(401, "https://edit.test/old", "Original title", 11, { note: "Keep this note", tags: ["read"] });
+    failures += await run("clean-up-bookmarks", {
+      seed: {
+        bookmarks: [bookmark], collections: COLLECTIONS, tags: [{ name: "read", count: 1 }],
+        state: { last_sync: String(now) },
+        checks: [{
+          bookmarkId: 401, url: bookmark.link, class: classification, status: classification === "unsure" ? 403 : 404,
+          reason: classification === "unsure" ? "HTTP 403" : "HTTP 404", checkedAt: now,
+          ...(classification === "pending" ? { firstDeadAt: now, retryDue: now + 120_000 } : {}),
+        }],
+      },
+      server: { items: [bookmark] },
+      interact: async (ctx) => {
+        await pickDropdown(ctx, view);
+        const edit = findAll(itemTitled(ctx, "Original title"), (n) => n.props?.title === "Edit Bookmark")[0];
+        assert.ok(edit, `${view} offers Edit Bookmark for ${classification}`);
+        assert.deepEqual(edit.props.shortcut, { modifiers: ["cmd"], key: "e" });
+        await pressIn(ctx, "Original title", "Edit Bookmark");
+        const fieldValue = (type, id) => findAll(ctx.tree(), (n) => n.type === type && n.props.id === id).at(-1)?.props.value;
+        assert.equal(fieldValue("Form.TextField", "link"), bookmark.link, "the current URL fills the form");
+        assert.equal(fieldValue("Form.TextArea", "note"), "Keep this note");
+        assert.deepEqual(fieldValue("Form.TagPicker", "tags"), ["read"]);
+        assert.equal(fieldValue("Form.Dropdown", "collection"), "11");
+        const save = actionNamed(ctx.tree(), "Save Changes");
+        assert.deepEqual(save.props.shortcut, { modifiers: ["cmd"], key: "s" });
+        await setField(ctx, "Form.TextField", "title", "Edited title");
+        await press(ctx, "Save Changes", 100);
+        await waitCalls(ctx, 1);
+        await waitFor(() => rowTitles(ctx).includes("Edited title"), "the updated title in the same check view");
+        assert.equal(ctx.calls[0], 'PUT /raindrop/401 {"title":"Edited title"}', "only the changed field reaches Raindrop");
+        assert.ok(rowActions(ctx).includes("Undo Edit cmd+z"), "the edit has a keyboard undo action");
+
+        await pressIn(ctx, "Edited title", "Edit Bookmark");
+        await setField(ctx, "Form.TextField", "link", "https://edit.test/new");
+        await press(ctx, "Save Changes", 100);
+        await waitCalls(ctx, 2);
+        await waitFor(() => !rowTitles(ctx).includes("Edited title"), "the old result leaves the list after a URL change");
+        assert.equal((await storeOf(ctx).getBookmark(401)).link, "https://edit.test/new");
+        assert.equal(ctx.calls[1], 'PUT /raindrop/401 {"link":"https://edit.test/new"}');
+        await pressPrefix(ctx, "Undo Edit", 100);
+        await waitCalls(ctx, 3);
+        await waitFor(() => rowTitles(ctx).includes("Edited title"), "undo restores the original URL and its check result");
+        assert.equal((await storeOf(ctx).getBookmark(401)).link, bookmark.link);
+        assert.equal(ctx.calls[2], 'PUT /raindrop/401 {"link":"https://edit.test/old"}');
+      },
+    });
+  }
+  return failures;
+}
+
+async function flowCleanupDeadLinksCsv() {
+  const now = Date.now();
+  return run("clean-up-bookmarks", {
+    seed: {
+      bookmarks: CHECK_ITEMS,
+      ignored: ["ignored.test"],
+      state: { last_sync: String(now) },
+      checks: CHECK_ITEMS.map((b) => ({
+        bookmarkId: b._id, url: b.link, checkedAt: now, status: 200, reason: "HTTP 200", class: "ok",
+        ...(b._id === 301 || b._id === 307 ? { class: "dead", status: 404, reason: "HTTP 404 on the first check and the retry" } : {}),
+        ...(b._id === 302 ? { class: "pending", status: 404, reason: "HTTP 404, retry pending", firstDeadAt: now, retryDue: now + 120_000 } : {}),
+        ...(b._id === 303 ? { class: "unsure", reason: "network error" } : {}),
+      })),
+    },
+    interact: async (ctx) => {
+      await pickDropdown(ctx, "Dead Links");
+      await pressIn(ctx, "Old dead page", "Export Dead Links CSV");
+      const directory = join(ctx.supportPath, "exports");
+      let files = readdirSync(directory);
+      assert.equal(files.length, 1, "one CSV file");
+      const csv = readFileSync(join(directory, files[0]), "utf8");
+      assert.ok(csv.startsWith('\uFEFF"bookmark_id","title","url","http_status","reason","checked_at"\r\n'));
+      assert.ok(csv.includes('"301","Old dead page","https://dead.test/old","404"'));
+      assert.equal(csv.split("\r\n").length, 3, "header, one confirmed dead link, trailing CRLF");
+      const toast = ctx.toasts.find((t) => t.title === "Exported 1 dead link");
+      assert.ok(toast, "the success toast names the count");
+      assert.equal(toast.primaryAction.title, "Open Export Folder");
+      runToastAction(ctx, toast.primaryAction);
+      await waitFor(() => ctx.opened.includes(directory), "the toast opens the export folder");
+      await pressIn(ctx, "Old dead page", "Export Dead Links CSV");
+      files = readdirSync(directory);
+      assert.equal(files.length, 2, "another export preserves the first file");
+      assert.ok(files.every((f) => readFileSync(join(directory, f), "utf8") === csv));
+
+      rmSync(directory, { recursive: true });
+      writeFileSync(directory, "not a directory");
+      await pressIn(ctx, "Old dead page", "Export Dead Links CSV");
+      assert.ok(toastTitles(ctx).includes("Could not export dead links"), "a filesystem error produces a failure toast");
+      rmSync(directory);
+      await pressIn(ctx, "Old dead page", "Ignore Host", 900);
+      await press(ctx, "Export Dead Links CSV");
+      assert.ok(toastTitles(ctx).includes("No confirmed dead links to export"), "the empty view still offers export");
+      assert.equal(existsSync(directory), false, "an empty export writes no file");
+      assert.equal(ctx.calls.length, 0, "export sends no Raindrop request");
+    },
+  });
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -1236,6 +1386,9 @@ const FLOWS_ALL = [
   flowAddDefaultsAndTags,
   flowCleanupDuplicates,
   flowCleanupDeadLinks,
+  flowCleanupDeadLinksCsv,
+  flowCleanupEditLinks,
+  flowCleanupMarkLive,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

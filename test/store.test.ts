@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Raindrop } from "../src/api/types";
+import { markLinkLive } from "../src/cleanup/manual";
 import { runProcess } from "../src/store/run";
 import { CHECKS_VERSION, SCHEMA_VERSION } from "../src/store/schema";
 import { checkFeatures, defaultBinary, deleteDatabase, SqliteStore } from "../src/store/sqlite";
@@ -299,6 +300,24 @@ describe.skipIf(!hasBinary)("SqliteStore on the real sqlite3", () => {
       { id: 5, link: "https://example.com/5", pending: { firstDeadStatus: 404, firstDeadAt: now - 1000, retryDue: now + 119_000 } },
       { id: 6, link: "https://example.com/6" },
     ]);
+  });
+
+  it("persists a manual live decision and checks it again after 30 days or a URL change", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = 100 * day;
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bookmark(1)]);
+    await store.saveLinkCheck({ bookmarkId: 1, url: "https://example.com/1", class: "unsure", status: 403, reason: "HTTP 403", checkedAt: 1 });
+    expect(await markLinkLive(store, { bookmarkId: 1, url: "https://example.com/1" }, now)).toBe(true);
+    const reopened = new SqliteStore({ path, binary });
+    expect(await reopened.linkChecks()).toEqual([{
+      bookmarkId: 1, url: "https://example.com/1", title: "Bookmark 1", class: "ok", reason: "Marked as live by you", checkedAt: now,
+    }]);
+    expect(await reopened.linkCheckWork(now + 29 * day)).toEqual([]);
+    expect(await reopened.linkCheckWork(now + 31 * day)).toEqual([{ id: 1, link: "https://example.com/1" }]);
+    await reopened.upsertPage([bookmark(1, { link: "https://example.com/new" })]);
+    expect(await reopened.linkChecks()).toEqual([]);
+    expect(await reopened.linkCheckWork(now + day)).toEqual([{ id: 1, link: "https://example.com/new" }]);
   });
 
   it("a changed bookmark URL invalidates its old check", async () => {

@@ -58,7 +58,7 @@ export function EditBookmarkForm({
       navigationTitle="Edit Bookmark"
       actions={
         <ActionPanel>
-          <Action.SubmitForm title="Save Changes" icon={Icon.Check} onSubmit={(v: Values) => void submit(v)} />
+          <Action.SubmitForm title="Save Changes" icon={Icon.Check} shortcut={{ modifiers: ["cmd"], key: "s" }} onSubmit={(v: Values) => void submit(v)} />
         </ActionPanel>
       }
     >

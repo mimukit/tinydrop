@@ -13,15 +13,19 @@ import {
   List,
   Toast,
   confirmAlert,
+  environment,
   open,
   showToast,
   useNavigation,
   type Keyboard,
 } from "@raycast/api";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { join } from "node:path";
 import { getAuth } from "../auth/secrets";
+import { saveDeadLinksCsv } from "../cleanup/csv";
 import { groupDuplicates, hasAnnotations, type DuplicateGroup } from "../cleanup/duplicates";
 import { LinkChecker } from "../cleanup/linkcheck";
+import { markLinkLive } from "../cleanup/manual";
 import {
   CHECK_VIEWS,
   CLEANUP_VIEWS,
@@ -47,6 +51,7 @@ import type { CleanupRow, LinkCheckListRow, LinkCheckTarget } from "../store/typ
 import { progressText, syncSummary } from "../sync/text";
 import type { BookmarkWriter, CleanupResult } from "../write/writer";
 import { AccountView } from "./AccountView";
+import { EditBookmarkForm } from "./EditBookmarkForm";
 import { Picker } from "./Picker";
 import { showFailure } from "./failure";
 import { openStore } from "./store";
@@ -59,6 +64,8 @@ const SYNC_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "r" };
 const RECHECK_KEY: Keyboard.Shortcut = { modifiers: ["cmd", "shift"], key: "r" };
 const OPEN_ALL_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "o" };
 const KEEPER_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "k" };
+const EDIT_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "e" };
+const LIVE_KEY: Keyboard.Shortcut = { modifiers: ["cmd"], key: "l" };
 /** The check list reloads at most this often while a check saves results. */
 const CHECK_RELOAD_MS = 1000;
 
@@ -84,6 +91,15 @@ export function CleanupView() {
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const syncing = useRef(false);
   const busy = useRef(false);
+  const checkWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const markedLive = useRef(new Map<number, string>());
+
+  // Keep manual decisions after earlier scan writes, and suppress later results from that scan.
+  function queueCheckWrite<T>(write: () => Promise<T>): Promise<T> {
+    const next = checkWrites.current.then(write);
+    checkWrites.current = next.catch(() => undefined);
+    return next;
+  }
 
   const openAccount = () => push(<AccountView onChange={() => setGeneration((g) => g + 1)} />);
   const reload = () => setRescan((r) => r + 1);
@@ -173,12 +189,15 @@ export function CleanupView() {
       await store.invalidateLinkChecks();
       const work = targets ?? (await store.linkCheckWork(Date.now()));
       if (work.length === 0 || checkerRef.current) return;
+      if (targets) for (const target of targets) markedLive.current.delete(target.id);
       const hosts = await store.ignoredHosts();
       const toast = showToast({ style: Toast.Style.Animated, title: "Checking links" });
       checker = new LinkChecker({
         ignoredHosts: hosts,
         save: async (row) => {
-          await store.saveLinkCheck(row);
+          await queueCheckWrite(async () => {
+            if (markedLive.current.get(row.bookmarkId) !== row.url) await store.saveLinkCheck(row);
+          });
           reloadSoon();
         },
         onSaveError: (error) => void showFailure(error, { title: "Could not save a link check" }),
@@ -301,6 +320,45 @@ export function CleanupView() {
     await runCleanup("Trash", () => writer.trashBookmarks([{ id: row.id, collectionId: row.collectionId }], { label: "Trash" }));
   };
 
+  const editBookmark = async (check: LinkCheckListRow) => {
+    try {
+      const store = await openStore();
+      const [row, collections, tags] = await Promise.all([store.getBookmark(check.bookmarkId), store.collections(), store.tags()]);
+      if (!row || row.collectionId === -99) {
+        reload();
+        await showToast({ style: Toast.Style.Failure, title: "The bookmark is no longer available", message: "Sync the library and try again" });
+        return;
+      }
+      push(
+        <EditBookmarkForm
+          row={row}
+          collections={collections}
+          tags={tags}
+          onSubmit={(patch) => writer.update(row, patch, { label: "Edit", message: "Bookmark updated" })}
+        />,
+      );
+    } catch (error) {
+      await showFailure(error, { title: "Could not open the bookmark editor", openAccount });
+    }
+  };
+
+  const markAsLive = async (check: LinkCheckListRow) => {
+    try {
+      const store = await openStore();
+      const saved = await queueCheckWrite(async () => {
+        const saved = await markLinkLive(store, check);
+        if (saved) markedLive.current.set(check.bookmarkId, check.url);
+        return saved;
+      });
+      reload();
+      await showToast(saved
+        ? { style: Toast.Style.Success, title: "Marked as live" }
+        : { style: Toast.Style.Failure, title: "The bookmark changed or is no longer available", message: "Sync the library and try again" });
+    } catch (error) {
+      await showFailure(error, { title: "Could not mark the link as live" });
+    }
+  };
+
   const ignoreHost = async (host: string) => {
     try {
       await (await openStore()).addIgnoredHost(host);
@@ -326,6 +384,29 @@ export function CleanupView() {
     if (entry) await showToast({ style: Toast.Style.Success, title: undoneMessage(entry) });
   };
 
+  const exportDeadLinks = async () => {
+    try {
+      const store = await openStore();
+      const directory = join(environment.supportPath, "exports");
+      const result = saveDeadLinksCsv(directory, await store.linkChecks(), new Set(await store.ignoredHosts()));
+      if (!result) {
+        await showToast({ style: Toast.Style.Success, title: "No confirmed dead links to export", message: "Pending retries are excluded" });
+        return;
+      }
+      await showToast({
+        style: Toast.Style.Success,
+        title: `Exported ${result.count} dead link${result.count === 1 ? "" : "s"}`,
+        message: result.path,
+        primaryAction: {
+          title: "Open Export Folder",
+          onAction: () => open(directory).catch((error) => showFailure(error, { title: "Could not open the export folder" })),
+        },
+      });
+    } catch (error) {
+      await showFailure(error, { title: "Could not export dead links" });
+    }
+  };
+
   // ─── Shared actions ─────────────────────────────────────────────
 
   const syncFirst = needsSyncFirst(lastSync, now) ? (
@@ -335,6 +416,7 @@ export function CleanupView() {
     undoSize > 0 ? <Action title={`Undo ${undoLabel ?? ""}`.trim()} icon={Icon.Undo} shortcut={UNDO_KEY} onAction={() => void undo()} /> : null;
   const commonActions = (
     <ActionPanel.Section>
+      {view === "dead" && <Action title="Export Dead Links CSV" icon={Icon.Download} onAction={() => void exportDeadLinks()} />}
       {undoAction}
       {syncFirst ? null : <Action title="Sync Now" icon={Icon.ArrowClockwise} shortcut={SYNC_KEY} onAction={() => void sync()} />}
       <Action title="Account" icon={Icon.Person} onAction={openAccount} />
@@ -460,6 +542,10 @@ export function CleanupView() {
             {syncFirst}
             <ActionPanel.Section title="Bookmark">
               <Action title="Open" icon={Icon.Globe} onAction={() => void open(check.url)} />
+              {(view === "dead" || view === "unsure") && (
+                <Action title="Edit Bookmark" icon={Icon.Pencil} shortcut={EDIT_KEY} onAction={() => void editBookmark(check)} />
+              )}
+              {view === "unsure" && <Action title="Mark as Live" icon={Icon.CheckCircle} shortcut={LIVE_KEY} onAction={() => void markAsLive(check)} />}
               {!scanning && (
                 <Action
                   title="Recheck"

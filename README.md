@@ -101,6 +101,22 @@ Enter a URL in Add Bookmark. Press `⌘R` or select Fetch Page Details from Acti
 
 `⌘↵` is not bound. The Add and Edit forms submit with the Tinycast form default.
 
+## Edit checked links
+
+Clean Up Bookmarks opens in Duplicates. Select Dead Links or Unsure to start or resume the link check.
+
+In Clean Up Bookmarks, select a bookmark in Dead Links or Unsure. Press `⌘E` or select Edit Bookmark from Actions. Change the URL or other fields, then press `⌘S` to save. Press `⌘Z` in the list to undo the edit. The form uses the same fields as the Search editor.
+
+A changed URL no longer shows its old check result. Open the check view again to check the new URL. Pending retries in Dead Links also offer Edit Bookmark.
+
+In Unsure, open the link to inspect it. If it works, press `⌘L` or select Mark as Live. This action removes the result from Unsure and keeps the bookmark in Raindrop. It saves your decision locally without an HTTP status. The app checks the link again after 30 days or when its URL changes. An active scan cannot replace your decision.
+
+## Export dead links
+
+Open Clean Up Bookmarks and select Dead Links. Select Export Dead Links CSV from Actions. The export includes all confirmed dead links, regardless of the search filter. It excludes pending retries and ignored hosts. During a scan, it includes only the confirmed results saved so far.
+
+The CSV contains the bookmark ID, title, URL, HTTP status, result reason, and check time in UTC. Each export creates a UTF-8 file in the `exports` directory under tinydrop's support directory. Select Open Export Folder in the success message to access the file. The export preserves earlier files and does not change your bookmarks. Spreadsheet formula prefixes receive a leading apostrophe.
+
 ## Not planned for v1
 
 Browse Collections, Unsorted triage and a random bookmark command are planned for v1.1. Save Browser Tab, server-side full-text search, the permanent copy, bulk edits and the Raycast AI tools are out of scope.
