@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Raindrop } from "../src/api/types";
 import { runProcess } from "../src/store/run";
-import { SCHEMA_VERSION } from "../src/store/schema";
+import { CHECKS_VERSION, SCHEMA_VERSION } from "../src/store/schema";
 import { checkFeatures, defaultBinary, deleteDatabase, SqliteStore } from "../src/store/sqlite";
 import { StoreFeatureError } from "../src/store/types";
 
@@ -118,6 +118,216 @@ describe.skipIf(!hasBinary)("SqliteStore on the real sqlite3", () => {
     expect((await store.topOpened()).map((r) => r.id)).toEqual([2]);
     const opens = await runProcess(binary, ["-json", path, "SELECT count(*) AS n FROM opens;"]);
     expect(JSON.parse(opens.stdout)).toEqual([{ n: 0 }]);
+  });
+
+  it("trashLocal moves a set of IDs to Trash and restoreLocal puts each back in its own collection", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([
+      bookmark(1, { collection: { $id: 5 } }),
+      bookmark(2, { collection: { $id: -1 } }),
+      bookmark(3, { collection: { $id: 7 }, title: "Quokka" }),
+      bookmark(4, { collection: { $id: 5 } }),
+    ]);
+    await store.trashLocal([1, 2, 3]);
+    expect((await store.cleanupRows()).map((r) => r.id)).toEqual([4]);
+    expect((await store.getBookmark(3))?.collectionId).toBe(-99);
+    await store.restoreLocal([
+      { id: 1, collectionId: 5 },
+      { id: 2, collectionId: -1 },
+      { id: 3, collectionId: 7 },
+      { id: 99, collectionId: 7 },
+    ]);
+    const rows = await store.cleanupRows();
+    expect(rows.map((r) => [r.id, r.collectionId])).toEqual([[1, 5], [2, -1], [3, 7], [4, 5]]);
+    expect((await store.search({ words: ["quokka"] })).map((r) => r.id)).toEqual([3]);
+    expect(await store.count()).toBe(4);
+    await store.trashLocal([]);
+    await store.restoreLocal([]);
+  });
+
+  it("cleanupRows reads every bookmark outside Trash with the keeper fields", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([
+      bookmark(1, {
+        link: "https://www.example.com/a/",
+        title: "It's a 'title'",
+        collection: { $id: 12 },
+        important: true,
+        tags: ["read", "dev"],
+        note: "  four  ",
+        highlights: [
+          { _id: "h1", text: "one" },
+          { _id: "h2", text: "two", note: "n" },
+        ],
+      }),
+      bookmark(2, { note: "   " }),
+      bookmark(3, { collection: { $id: -99 } }),
+    ]);
+    expect(await store.cleanupRows()).toEqual([
+      {
+        id: 1,
+        link: "https://www.example.com/a/",
+        title: "It's a 'title'",
+        collectionId: 12,
+        created: "2026-01-02T00:00:00.000Z",
+        important: true,
+        tags: ["read", "dev"],
+        noteLength: 4,
+        highlightCount: 2,
+      },
+      {
+        id: 2,
+        link: "https://example.com/2",
+        title: "Bookmark 2",
+        collectionId: -1,
+        created: "2026-01-03T00:00:00.000Z",
+        important: false,
+        tags: [],
+        noteLength: 0,
+        highlightCount: 0,
+      },
+    ]);
+  });
+
+  it("findByHost finds the www. and bare host forms outside Trash", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([
+      bookmark(1, { link: "https://www.example.com/a", domain: "www.example.com" }),
+      bookmark(2, { link: "http://example.com/b", domain: "example.com" }),
+      bookmark(3, { link: "https://example.com/c", collection: { $id: -99 } }),
+      bookmark(4, { link: "https://other.org/d", domain: "other.org" }),
+    ]);
+    expect((await store.findByHost("example.com")).map((r) => r.id).sort()).toEqual([1, 2]);
+  });
+
+  it("keeps link_checks, ignored_hosts and checks_version through a mirror schema reset", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bookmark(1)]);
+    await store.saveLinkCheck({ bookmarkId: 1, url: "https://example.com/1", class: "ok", status: 200, reason: "HTTP 200", checkedAt: 5 });
+    await store.addIgnoredHost("Blocked.Example.");
+    expect(await store.getSyncState("checks_version")).toBe(String(CHECKS_VERSION));
+    // A marker value: open() writes the key only when it is missing, so this proves the reset kept the stored value.
+    await store.setSyncState({ schema_version: String(SCHEMA_VERSION - 1), checks_version: "kept" });
+
+    const reopened = new SqliteStore({ path, binary });
+    await reopened.open();
+    expect(await reopened.count()).toBe(0);
+    expect(await reopened.getSyncState("checks_version")).toBe("kept");
+    expect(await reopened.ignoredHosts()).toEqual(["blocked.example"]);
+    // The check waits for the next sync to bring its bookmark back.
+    await reopened.upsertPage([bookmark(1)]);
+    expect(await reopened.linkChecks()).toEqual([
+      { bookmarkId: 1, url: "https://example.com/1", class: "ok", status: 200, reason: "HTTP 200", checkedAt: 5, title: "Bookmark 1" },
+    ]);
+  });
+
+  it("saves, replaces and lists link checks, with pending retry fields", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bookmark(1, { title: "It's 'quoted'" }), bookmark(2), bookmark(3, { collection: { $id: -99 } })]);
+    await store.saveLinkCheck({
+      bookmarkId: 1,
+      url: "https://example.com/1",
+      class: "pending",
+      status: 404,
+      reason: "HTTP 404, retry pending",
+      checkedAt: 1000,
+      firstDeadStatus: 404,
+      firstDeadAt: 1000,
+      retryDue: 121_000,
+    });
+    await store.saveLinkCheck({ bookmarkId: 2, url: "https://example.com/2", class: "unsure", reason: "network error: it's down", checkedAt: 2000 });
+    await store.saveLinkCheck({ bookmarkId: 3, url: "https://example.com/3", class: "dead", status: 404, reason: "HTTP 404", checkedAt: 3000 });
+    expect(await store.linkChecks()).toEqual([
+      {
+        bookmarkId: 1,
+        url: "https://example.com/1",
+        class: "pending",
+        status: 404,
+        reason: "HTTP 404, retry pending",
+        checkedAt: 1000,
+        firstDeadStatus: 404,
+        firstDeadAt: 1000,
+        retryDue: 121_000,
+        title: "It's 'quoted'",
+      },
+      { bookmarkId: 2, url: "https://example.com/2", class: "unsure", reason: "network error: it's down", checkedAt: 2000, title: "Bookmark 2" },
+    ]);
+    await store.saveLinkCheck({ bookmarkId: 1, url: "https://example.com/1", class: "dead", status: 410, reason: "HTTP 410", checkedAt: 121_000 });
+    expect((await store.linkChecks())[0]).toEqual({
+      bookmarkId: 1,
+      url: "https://example.com/1",
+      class: "dead",
+      status: 410,
+      reason: "HTTP 410",
+      checkedAt: 121_000,
+      title: "It's 'quoted'",
+    });
+  });
+
+  it("lists due work: missing, older than 30 days, changed URL, and pending retries", async () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = 100 * day;
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([1, 2, 3, 4, 5, 6].map((id) => bookmark(id)).concat(bookmark(7, { collection: { $id: -99 } })));
+    await store.saveLinkCheck({ bookmarkId: 2, url: "https://example.com/2", class: "ok", reason: "HTTP 200", checkedAt: now - day });
+    await store.saveLinkCheck({ bookmarkId: 3, url: "https://example.com/3", class: "ok", reason: "HTTP 200", checkedAt: now - 31 * day });
+    await store.saveLinkCheck({ bookmarkId: 4, url: "https://example.com/old-4", class: "dead", reason: "HTTP 404", checkedAt: now - day });
+    await store.saveLinkCheck({
+      bookmarkId: 5,
+      url: "https://example.com/5",
+      class: "pending",
+      status: 404,
+      reason: "HTTP 404, retry pending",
+      checkedAt: now - 1000,
+      firstDeadStatus: 404,
+      firstDeadAt: now - 1000,
+      retryDue: now + 119_000,
+    });
+    await store.saveLinkCheck({
+      bookmarkId: 6,
+      url: "https://example.com/old-6",
+      class: "pending",
+      reason: "HTTP 404, retry pending",
+      checkedAt: now - 1000,
+      firstDeadAt: now - 1000,
+      retryDue: now + 119_000,
+    });
+    expect(await store.linkCheckWork(now)).toEqual([
+      { id: 1, link: "https://example.com/1" },
+      { id: 3, link: "https://example.com/3" },
+      { id: 4, link: "https://example.com/4" },
+      { id: 5, link: "https://example.com/5", pending: { firstDeadStatus: 404, firstDeadAt: now - 1000, retryDue: now + 119_000 } },
+      { id: 6, link: "https://example.com/6" },
+    ]);
+  });
+
+  it("a changed bookmark URL invalidates its old check", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bookmark(1), bookmark(2)]);
+    await store.saveLinkCheck({ bookmarkId: 1, url: "https://example.com/1", class: "dead", status: 404, reason: "HTTP 404", checkedAt: 1 });
+    await store.saveLinkCheck({ bookmarkId: 2, url: "https://example.com/2", class: "ok", reason: "HTTP 200", checkedAt: 1 });
+    // A check of a bookmark the store does not hold (such as after a mirror reset) stays.
+    await store.saveLinkCheck({ bookmarkId: 9, url: "https://example.com/9", class: "ok", reason: "HTTP 200", checkedAt: 1 });
+    await store.upsertPage([bookmark(1, { link: "https://example.com/moved" })]);
+    expect((await store.linkChecks()).map((r) => r.bookmarkId)).toEqual([2]);
+    expect(await store.invalidateLinkChecks()).toBe(1);
+    const rows = await runProcess(binary, ["-json", path, "SELECT bookmark_id FROM link_checks ORDER BY bookmark_id;"]);
+    expect(JSON.parse(rows.stdout)).toEqual([{ bookmark_id: 2 }, { bookmark_id: 9 }]);
+  });
+
+  it("adds, lists and removes ignored hosts; removal frees the ignored-host skips for a recheck", async () => {
+    const store = new SqliteStore({ path, binary });
+    await store.upsertPage([bookmark(1)]);
+    await store.addIgnoredHost(" Zeta.Example ");
+    await store.addIgnoredHost("alpha.example");
+    await store.addIgnoredHost("ALPHA.example.");
+    await store.addIgnoredHost("o'brien.example");
+    expect(await store.ignoredHosts()).toEqual(["alpha.example", "o'brien.example", "zeta.example"]);
+    await store.saveLinkCheck({ bookmarkId: 1, url: "https://example.com/1", class: "skipped", reason: "ignored host", checkedAt: 1 });
+    await store.removeIgnoredHost("Zeta.example");
+    expect(await store.ignoredHosts()).toEqual(["alpha.example", "o'brien.example"]);
+    expect(await store.linkChecks()).toEqual([]);
+    expect((await store.linkCheckWork(2)).map((t) => t.id)).toEqual([1]);
   });
 
   it("runs in WAL mode", async () => {

@@ -5,7 +5,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Raindrop, RaindropType } from "../api/types";
-import { LOCAL_DDL, MIRROR_DDL, MIRROR_TABLES, FTS_COLUMNS, OPENS_VERSION, SCHEMA_VERSION } from "./schema";
+import { normalizeHost } from "../cleanup/linkcheck";
+import { CHECKS_VERSION, LOCAL_DDL, MIRROR_DDL, MIRROR_TABLES, FTS_COLUMNS, OPENS_VERSION, SCHEMA_VERSION } from "./schema";
 import { BOOKMARK_COLUMNS, compileSearch, SEARCH_LIMIT, sqlBool, sqlInt, sqlIntList, sqlNullable, sqlString } from "./sql";
 import { runProcess, type Runner } from "./run";
 import { TimeRing } from "./timing";
@@ -14,7 +15,14 @@ import {
   StoreFeatureError,
   type BookmarkRow,
   type BookmarkStore,
+  type CleanupRow,
+  type CollectionMove,
   type CollectionRow,
+  type LinkCheckClass,
+  type LinkCheckListRow,
+  type LinkCheckRow,
+  type LinkCheckStore,
+  type LinkCheckTarget,
   type SearchQuery,
   type TagRow,
   type UpsertOptions,
@@ -26,6 +34,11 @@ const TIMEOUT = [".timeout 2000"];
 /** Trash. A row deleted from a window stays in the store with this collection until a sync drops it, so undo keeps its opens and highlights. */
 const TRASH_ID = -99;
 const TYPES: RaindropType[] = ["link", "article", "image", "video", "document", "audio"];
+const CHECK_CLASSES: LinkCheckClass[] = ["ok", "dead", "unsure", "skipped", "pending"];
+/** A check older than this is due again. */
+export const CHECK_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** The `sync_state` keys a mirror reset keeps. */
+const LOCAL_VERSION_KEYS = ["opens_version", "checks_version"];
 
 export interface SqliteStoreOptions {
   /** The database file, normally `environment.supportPath/tinydrop.sqlite`. */
@@ -108,6 +121,26 @@ function toBookmark(r: Row): BookmarkRow {
   };
 }
 
+/** Spreads `{ [key]: number }` when the column is not NULL, so absent fields stay absent. */
+function optionalField<K extends string>(key: K, value: unknown): Partial<Record<K, number>> {
+  return value === null || value === undefined ? {} : ({ [key]: Number(value) } as Record<K, number>);
+}
+
+function toLinkCheck(r: Row): LinkCheckRow {
+  const cls = String(r.class) as LinkCheckClass;
+  return {
+    bookmarkId: Number(r.bookmark_id),
+    url: String(r.url ?? ""),
+    class: CHECK_CLASSES.includes(cls) ? cls : "unsure",
+    reason: String(r.reason ?? ""),
+    checkedAt: Number(r.checked_at ?? 0),
+    ...optionalField("status", r.status),
+    ...optionalField("firstDeadStatus", r.first_dead_status),
+    ...optionalField("firstDeadAt", r.first_dead_at),
+    ...optionalField("retryDue", r.retry_due),
+  };
+}
+
 function domainOf(item: Raindrop): string {
   if (item.domain) return item.domain;
   try {
@@ -170,7 +203,7 @@ export function upsertBookmarkSql(item: Raindrop): string {
   return lines.join("\n");
 }
 
-export class SqliteStore implements BookmarkStore {
+export class SqliteStore implements BookmarkStore, LinkCheckStore {
   readonly path: string;
   readonly binary: string;
   private readonly runner: Runner;
@@ -200,18 +233,19 @@ export class SqliteStore implements BookmarkStore {
     mkdirSync(dirname(this.path), { recursive: true });
     await this.exec(`PRAGMA journal_mode = WAL;\n${LOCAL_DDL}`, false);
     const versions = await this.readRaw(
-      `SELECT key, value FROM sync_state WHERE key IN (${sqlString("schema_version")}, ${sqlString("opens_version")});`,
+      `SELECT key, value FROM sync_state WHERE key IN (${["schema_version", ...LOCAL_VERSION_KEYS].map((k) => sqlString(k)).join(", ")});`,
     );
     const stored = Object.fromEntries(versions.map((r) => [String(r.key), String(r.value)]));
     const script: string[] = [];
     if (stored.schema_version !== undefined && stored.schema_version !== String(SCHEMA_VERSION)) {
       // The server holds the truth for these, so a drop is safe; the next sync is a full one.
       for (const table of MIRROR_TABLES) script.push(`DROP TABLE IF EXISTS ${table};`);
-      script.push(`DELETE FROM sync_state WHERE key <> ${sqlString("opens_version")};`);
+      script.push(`DELETE FROM sync_state WHERE key NOT IN (${LOCAL_VERSION_KEYS.map((k) => sqlString(k)).join(", ")});`);
     }
     script.push(MIRROR_DDL);
     script.push(this.syncStateSql({ schema_version: String(SCHEMA_VERSION) }));
     if (stored.opens_version === undefined) script.push(this.syncStateSql({ opens_version: String(OPENS_VERSION) }));
+    if (stored.checks_version === undefined) script.push(this.syncStateSql({ checks_version: String(CHECKS_VERSION) }));
     await this.exec(script.join("\n"));
   }
 
@@ -310,6 +344,26 @@ LIMIT 500;`);
     return rows.map(toBookmark);
   }
 
+  async cleanupRows(): Promise<CleanupRow[]> {
+    const rows = await this.read(`SELECT b.id, b.link, b.title, b.collection_id, b.created, b.important, b.tags,
+  length(trim(b.note)) AS note_length,
+  (SELECT count(*) FROM highlights h WHERE h.bookmark_id = b.id) AS highlight_count
+FROM bookmarks b
+WHERE b.collection_id <> ${sqlInt(TRASH_ID)}
+ORDER BY b.id;`);
+    return rows.map((r) => ({
+      id: Number(r.id),
+      link: String(r.link ?? ""),
+      title: String(r.title ?? ""),
+      collectionId: Number(r.collection_id ?? -1),
+      created: String(r.created ?? ""),
+      important: Number(r.important) === 1,
+      tags: parseJsonArray<string>(r.tags),
+      noteLength: Number(r.note_length ?? 0),
+      highlightCount: Number(r.highlight_count ?? 0),
+    }));
+  }
+
   async upsertPage(items: Raindrop[], options: UpsertOptions = {}): Promise<void> {
     const script = items.map(upsertBookmarkSql);
     if (options.seen && items.length > 0) {
@@ -318,6 +372,22 @@ LIMIT 500;`);
     if (options.syncState && Object.keys(options.syncState).length > 0) script.push(this.syncStateSql(options.syncState));
     if (script.length === 0) return;
     await this.write(script.join("\n"));
+  }
+
+  async trashLocal(ids: number[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.write(`UPDATE bookmarks SET collection_id = ${sqlInt(TRASH_ID)} WHERE id IN (${sqlIntList(ids)});`);
+  }
+
+  async restoreLocal(moves: CollectionMove[]): Promise<void> {
+    if (moves.length === 0) return;
+    const byCollection = new Map<number, number[]>();
+    for (const m of moves) byCollection.set(m.collectionId, [...(byCollection.get(m.collectionId) ?? []), m.id]);
+    await this.write(
+      [...byCollection]
+        .map(([collectionId, ids]) => `UPDATE bookmarks SET collection_id = ${sqlInt(collectionId)} WHERE id IN (${sqlIntList(ids)});`)
+        .join("\n"),
+    );
   }
 
   async deleteIds(ids: number[]): Promise<number> {
@@ -430,6 +500,81 @@ LIMIT 500;`);
   async setSyncState(entries: Record<string, string>): Promise<void> {
     if (Object.keys(entries).length === 0) return;
     await this.write(this.syncStateSql(entries));
+  }
+
+  // ─── Dead-link checks ─────────────────────────────────────────────
+
+  async saveLinkCheck(row: LinkCheckRow): Promise<void> {
+    const int = (v: number | undefined) => (v === undefined ? "NULL" : sqlInt(Math.trunc(v)));
+    await this.write(
+      `INSERT OR REPLACE INTO link_checks (bookmark_id, url, class, status, reason, checked_at, first_dead_status, first_dead_at, retry_due) VALUES (${[
+        sqlInt(row.bookmarkId),
+        sqlString(row.url),
+        sqlString(row.class),
+        int(row.status),
+        sqlString(row.reason),
+        int(row.checkedAt),
+        int(row.firstDeadStatus),
+        int(row.firstDeadAt),
+        int(row.retryDue),
+      ].join(", ")});`,
+    );
+  }
+
+  async linkChecks(): Promise<LinkCheckListRow[]> {
+    const rows = await this.read(`SELECT c.*, b.title
+FROM link_checks c JOIN bookmarks b ON b.id = c.bookmark_id
+WHERE b.collection_id <> ${sqlInt(TRASH_ID)} AND c.url = b.link
+ORDER BY c.bookmark_id;`);
+    return rows.map((r) => ({ ...toLinkCheck(r), title: String(r.title ?? "") }));
+  }
+
+  async linkCheckWork(now: number, maxAgeMs: number = CHECK_MAX_AGE_MS): Promise<LinkCheckTarget[]> {
+    const pending = sqlString("pending");
+    const rows = await this.read(`SELECT b.id, b.link, c.class, c.url, c.first_dead_status, c.first_dead_at, c.retry_due
+FROM bookmarks b LEFT JOIN link_checks c ON c.bookmark_id = b.id
+WHERE b.collection_id <> ${sqlInt(TRASH_ID)}
+  AND (c.bookmark_id IS NULL OR c.url <> b.link OR c.class = ${pending} OR c.checked_at < ${sqlInt(Math.trunc(now - maxAgeMs))})
+ORDER BY b.id;`);
+    return rows.map((r) => {
+      const target: LinkCheckTarget = { id: Number(r.id), link: String(r.link ?? "") };
+      if (r.class === "pending" && r.url === r.link && r.retry_due !== null && r.retry_due !== undefined) {
+        target.pending = {
+          ...optionalField("firstDeadStatus", r.first_dead_status),
+          firstDeadAt: Number(r.first_dead_at ?? 0),
+          retryDue: Number(r.retry_due),
+        };
+      }
+      return target;
+    });
+  }
+
+  async invalidateLinkChecks(): Promise<number> {
+    const stale = "SELECT c.bookmark_id FROM link_checks c JOIN bookmarks b ON b.id = c.bookmark_id WHERE b.link <> c.url";
+    const found = await this.read(`SELECT count(*) AS n FROM (${stale});`);
+    await this.write(`DELETE FROM link_checks WHERE bookmark_id IN (${stale});`);
+    return Number(found[0]?.n ?? 0);
+  }
+
+  async ignoredHosts(): Promise<string[]> {
+    const rows = await this.read("SELECT host FROM ignored_hosts ORDER BY host;");
+    return rows.map((r) => String(r.host));
+  }
+
+  async addIgnoredHost(host: string): Promise<void> {
+    const h = normalizeHost(host);
+    if (!h) return;
+    await this.write(`INSERT OR IGNORE INTO ignored_hosts (host) VALUES (${sqlString(h)});`);
+  }
+
+  async removeIgnoredHost(host: string): Promise<void> {
+    await this.write(
+      [
+        `DELETE FROM ignored_hosts WHERE host = ${sqlString(normalizeHost(host))};`,
+        // Cheap to redo: the next run skips the hosts still ignored without a request.
+        `DELETE FROM link_checks WHERE class = ${sqlString("skipped")} AND reason = ${sqlString("ignored host")};`,
+      ].join("\n"),
+    );
   }
 
   queryTimes(): number[] {

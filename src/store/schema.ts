@@ -1,12 +1,15 @@
 // The database schema. The server-mirror tables hold what Raindrop holds, so a
 // SCHEMA_VERSION change drops them and the next sync fills them again. `opens`
 // lives only on this Mac: it has its own OPENS_VERSION and survives a schema
-// version change.
+// version change. `link_checks` and `ignored_hosts` (dead-link check state and
+// the ignore list) also live only here, share CHECKS_VERSION, and survive too.
 
 /** Bump when a server-mirror table changes. */
 export const SCHEMA_VERSION = 1;
 /** Bump when the `opens` table changes; that needs a migration, not a drop. */
 export const OPENS_VERSION = 1;
+/** Bump when `link_checks` or `ignored_hosts` changes; that needs a migration, not a drop. */
+export const CHECKS_VERSION = 1;
 
 /** Tables that mirror the server, dropped on a schema version change. */
 export const MIRROR_TABLES = ["bookmarks", "bookmarks_fts", "highlights", "collections", "tags", "sync_seen"] as const;
@@ -25,6 +28,23 @@ CREATE TABLE IF NOT EXISTS opens (
   bookmark_id INTEGER PRIMARY KEY,
   count INTEGER NOT NULL DEFAULT 0,
   last_opened INTEGER NOT NULL DEFAULT 0
+);
+-- The latest dead-link check of each bookmark. A row whose url differs from the
+-- bookmark's link is stale. first_dead_* and retry_due are set only while the
+-- class is 'pending' (a first dead result that waits for its GET retry).
+CREATE TABLE IF NOT EXISTS link_checks (
+  bookmark_id INTEGER PRIMARY KEY,
+  url TEXT NOT NULL,
+  class TEXT NOT NULL,
+  status INTEGER,
+  reason TEXT NOT NULL DEFAULT '',
+  checked_at INTEGER NOT NULL,
+  first_dead_status INTEGER,
+  first_dead_at INTEGER,
+  retry_due INTEGER
+);
+CREATE TABLE IF NOT EXISTS ignored_hosts (
+  host TEXT PRIMARY KEY
 );
 `;
 

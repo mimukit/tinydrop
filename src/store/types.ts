@@ -26,6 +26,84 @@ export interface BookmarkRow {
   lastOpened?: number;
 }
 
+/** One bookmark as the cleanup command reads it: the fields duplicate grouping and keeper choice need. */
+export interface CleanupRow {
+  id: number;
+  link: string;
+  title: string;
+  collectionId: number;
+  /** The ISO creation time from Raindrop. */
+  created: string;
+  /** The favorite flag. */
+  important: boolean;
+  tags: string[];
+  /** The length of the note without surrounding white space. */
+  noteLength: number;
+  highlightCount: number;
+}
+
+/** A stored dead-link check class. `pending` is a first dead result that waits for its GET retry. */
+export type LinkCheckClass = "ok" | "dead" | "unsure" | "skipped" | "pending";
+
+/** One row of `link_checks`: the latest check of one bookmark. Times are ms since the epoch. */
+export interface LinkCheckRow {
+  bookmarkId: number;
+  /** The bookmark link the check used. A row whose URL differs from the current link is stale. */
+  url: string;
+  class: LinkCheckClass;
+  /** The HTTP status, when a response came back. */
+  status?: number;
+  /** Why the check got its class, such as "HTTP 404", "timeout" or "localhost". */
+  reason: string;
+  checkedAt: number;
+  /** The first dead result's status, kept while the retry is pending. */
+  firstDeadStatus?: number;
+  /** When the first dead result came back, kept while the retry is pending. */
+  firstDeadAt?: number;
+  /** The earliest time the GET retry may run, kept while the retry is pending. */
+  retryDue?: number;
+}
+
+/** A stored check with the bookmark title, for the results list. */
+export interface LinkCheckListRow extends LinkCheckRow {
+  title: string;
+}
+
+/** A bookmark the checker must check: missing, stale, changed, or a pending retry. */
+export interface LinkCheckTarget {
+  id: number;
+  link: string;
+  /** Set when a first dead result waits for its retry. The checker then sends only the GET retry. */
+  pending?: { firstDeadStatus?: number; firstDeadAt: number; retryDue: number };
+}
+
+/** Check state and the ignore list. A separate interface, so fake BookmarkStores stay as they are. */
+export interface LinkCheckStore {
+  /** Inserts or replaces the check of one bookmark. */
+  saveLinkCheck(row: LinkCheckRow): Promise<void>;
+  /** Every stored check whose URL is the bookmark's current link, outside Trash, by bookmark ID. */
+  linkChecks(): Promise<LinkCheckListRow[]>;
+  /**
+   * The work for a run, by bookmark ID: bookmarks outside Trash with no check, a check of another
+   * URL, a check older than `maxAgeMs` (default 30 days), or a pending retry (due or not).
+   */
+  linkCheckWork(now: number, maxAgeMs?: number): Promise<LinkCheckTarget[]>;
+  /** Deletes checks whose URL differs from the stored bookmark's link. Checks of missing bookmarks stay. Resolves to the count deleted. */
+  invalidateLinkChecks(): Promise<number>;
+  /** The ignored hosts, normalized, sorted. */
+  ignoredHosts(): Promise<string[]>;
+  /** Adds one exact host to the ignore list (normalized). */
+  addIgnoredHost(host: string): Promise<void>;
+  /** Removes one host, and deletes the `ignored host` skipped checks so the next run checks them again. */
+  removeIgnoredHost(host: string): Promise<void>;
+}
+
+/** A bookmark and the collection it goes back to. */
+export interface CollectionMove {
+  id: number;
+  collectionId: number;
+}
+
 export interface CollectionRow {
   id: number;
   title: string;
@@ -91,11 +169,17 @@ export interface BookmarkStore {
   saveRow(row: BookmarkRow): Promise<void>;
   /** The bookmarks whose domain or link holds `host` (lowercase), not in Trash, for the duplicate check. */
   findByHost(host: string): Promise<BookmarkRow[]>;
+  /** Every bookmark outside Trash, by ID, for duplicate detection. */
+  cleanupRows(): Promise<CleanupRow[]>;
   /**
    * Inserts or updates one page of API bookmarks, with highlights and the FTS row, in one transaction.
    * The same transaction marks the IDs as seen by a full resync and writes `syncState`, when given.
    */
   upsertPage(items: Raindrop[], options?: UpsertOptions): Promise<void>;
+  /** Moves the stored rows of these IDs to Trash in one transaction, before a bulk trash call goes out. Missing IDs are skipped. */
+  trashLocal(ids: number[]): Promise<void>;
+  /** Puts each stored row back in its collection in one transaction. Missing IDs are skipped, so a sync that dropped them does no harm. */
+  restoreLocal(moves: CollectionMove[]): Promise<void>;
   /** Deletes bookmarks, their highlights, FTS rows and `opens` rows. Resolves to the count of bookmarks it removed. */
   deleteIds(ids: number[]): Promise<number>;
   /** Forgets the IDs a full resync has seen. A full resync calls it once at its start. */
