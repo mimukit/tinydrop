@@ -68,10 +68,23 @@ const SYNCED_MARK = "2026-11-01T12:00:00.000Z";
 /** Tokens the fake server accepts. Any other token gets a 401. */
 const GOOD_TOKENS = new Set(["tok", "new-token"]);
 
-function fakeRaindrop(calls) {
+/**
+ * The fake Raindrop API. `server.items` adds bookmarks the server holds (cleanup flows).
+ * `server.links` answers every request outside the API, as a link check sends it: a map from
+ * URL to `(method) => ({ status, url? })`, which may throw to act as a network error. Each such
+ * request goes to `linkCalls` as "METHOD url"; a URL with no entry gets a thrown error.
+ */
+function fakeRaindrop(calls, server = {}, linkCalls = []) {
   // Each run gets its own copy of the server bookmarks, so a PUT reply carries the earlier writes.
-  const items = new Map(SERVER_BOOKMARKS.map((b) => [b._id, structuredClone(b)]));
+  const items = new Map([...SERVER_BOOKMARKS, ...(server.items ?? [])].map((b) => [b._id, structuredClone(b)]));
   return async ([spec]) => {
+    if (!spec.url.startsWith(API)) {
+      linkCalls.push(`${spec.method} ${spec.url}`);
+      const answer = server.links?.[spec.url];
+      if (!answer) throw new Error(`fake link server: no answer for ${spec.url}`);
+      const { status, url } = answer(spec.method, spec.headers ?? {});
+      return { status, statusText: String(status), headers: { "content-type": "text/html" }, url: url ?? spec.url, bodyBase64: "" };
+    }
     const url = new URL(spec.url);
     url.searchParams.delete("_");
     const path = url.href.replace(API, "");
@@ -90,6 +103,22 @@ function fakeRaindrop(calls) {
       return reply(200, { result: true, item: { title: "Fetched title", excerpt: "Fetched description" } });
     }
     if (p === "/user") return reply(200, { result: true, user: USER });
+    // Bulk trash and restore, as Phase 1 verified them: the path collection filters the IDs.
+    const bulk = p.match(/^\/raindrops\/(-?\d+)$/);
+    if (bulk && (spec.method === "DELETE" || spec.method === "PUT") && Array.isArray(body?.ids)) {
+      const from = Number(bulk[1]);
+      const to = spec.method === "DELETE" ? -99 : body.collection?.$id;
+      if (spec.method === "DELETE" && (from === -99 || from === 0)) return reply(400, { result: false, error: "fake server: refused bulk delete" });
+      let modified = 0;
+      for (const id of body.ids) {
+        const item = items.get(id);
+        if (item && item.collection.$id === from && typeof to === "number") {
+          item.collection = { $id: to };
+          modified++;
+        }
+      }
+      return reply(200, { result: true, matched: modified, modified });
+    }
     const page = Number(url.searchParams.get("page") ?? 0), perpage = Number(url.searchParams.get("perpage") ?? 50);
     const pageOf = (items) => ({ result: true, items: items.slice(page * perpage, (page + 1) * perpage), count: items.length });
     if (p === "/raindrops/0") {
@@ -192,6 +221,8 @@ async function supportDir({ seed = false } = {}) {
     if (seed.collections) await store.replaceCollections(seed.collections);
     if (seed.tags) await store.replaceTags(seed.tags);
     for (const id of seed.opens ?? []) await store.recordOpen(id);
+    for (const row of seed.checks ?? []) await store.saveLinkCheck(row);
+    for (const host of seed.ignored ?? []) await store.addIgnoredHost(host);
   }
   return dir;
 }
@@ -208,17 +239,17 @@ const tempDirs = [];
  * Runs one command in a fresh harness. `keychain` is the starting Keychain,
  * `interact` drives the screen. Returns the failure count.
  */
-async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, preferences = {}, storage: storageSeed, clipboard = "", confirmations = [], interact } = {}) {
+async function run(commandName, { args = {}, keychain = { "test-token": "tok" }, seed = false, server = {}, preferences = {}, storage: storageSeed, clipboard = "", confirmations = [], interact } = {}) {
   const cmd = manifest.commands.find((c) => c.name === commandName);
   assert.ok(cmd, `command ${commandName} is in the manifest`);
   const supportPath = await supportDir({ seed });
   tempDirs.push(supportPath);
-  const calls = [], toasts = [], updates = [], alerts = [], opened = [], copied = [];
+  const calls = [], linkCalls = [], toasts = [], updates = [], alerts = [], opened = [], copied = [];
   const storage = { ...(storageSeed ?? {}) };
   const harness = createHarness({
     verbose: !!process.env.VERBOSE,
     stubs: {
-      "fetch.request": fakeRaindrop(calls),
+      "fetch.request": fakeRaindrop(calls, server, linkCalls),
       "feedback.showToast": (a) => { toasts.push(a[0]); return `toast-${toasts.length}`; },
       "feedback.showHUD": (a) => { toasts.push({ hud: a[0] }); return null; },
       "feedback.updateToast": (a) => { updates.push(a[1]); return null; },
@@ -244,7 +275,7 @@ async function run(commandName, { args = {}, keychain = { "test-token": "tok" },
   console.log(`\n=== ${commandName} ===`);
   if (harness.state.failures.length) console.log("FAILURES:", harness.state.failures);
   let failed = harness.state.failures.length;
-  const ctx = { harness, calls, toasts, updates, alerts, opened, copied, storage, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
+  const ctx = { harness, calls, linkCalls, toasts, updates, alerts, opened, copied, storage, keychain, supportPath, tree: () => harness.state.trees.at(-1) };
   if (interact) {
     try {
       await interact(ctx);
@@ -947,6 +978,250 @@ async function flowAddDefaultsAndTags() {
   });
 }
 
+// ─── Plan 0002 Phase 5: Clean Up Bookmarks ──────────────────────────
+
+/** A server bookmark for the cleanup flows. */
+function cleanupItem(id, link, title, collectionId, over = {}) {
+  return {
+    _id: id, link, title, domain: new URL(link).hostname, type: "link", tags: [], collection: { $id: collectionId },
+    created: "2026-10-01T00:00:00.000Z", lastUpdate: "2026-10-01T00:00:00.000Z", ...over,
+  };
+}
+
+/** The List.Item with this title. */
+const itemTitled = (ctx, title) => findAll(ctx.tree(), (n) => n.type === "List.Item" && n.props.title === title)[0];
+
+/** The action titles of the List.Item with this title, in panel order. */
+const itemActions = (ctx, title) => {
+  const item = itemTitled(ctx, title);
+  assert.ok(item, `a row titled "${title}": ${rowTitles(ctx)}`);
+  return findAll(item, (n) => n.type === "Action" || n.type === "Action.Push").map((n) => n.props.title);
+};
+
+/** Presses an action of the List.Item with this title. */
+async function pressIn(ctx, rowTitle, actionTitle, wait = 500) {
+  const item = itemTitled(ctx, rowTitle);
+  assert.ok(item, `a row titled "${rowTitle}": ${rowTitles(ctx)}`);
+  const a = findAll(item, (n) => n.props?.title === actionTitle && n.props?.onAction?.$fn)[0];
+  assert.ok(a, `row "${rowTitle}" has action "${actionTitle}"`);
+  ctx.harness.dispatch("s1", a.props.onAction.$fn, []);
+  await sleep(wait);
+}
+
+const accessoryTexts = (ctx, title) => (itemTitled(ctx, title)?.props.accessories ?? []).map((a) => a.text ?? a.tag?.value ?? a.tag);
+
+/** Five duplicate groups and one single bookmark. 232 has a note, so bulk cleanup skips it until approval. */
+const DUPLICATE_ITEMS = [
+  cleanupItem(201, "https://alpha.test/post", "Alpha 201", 11, { tags: ["a"] }),
+  cleanupItem(202, "http://www.alpha.test/post/", "Alpha 202", -1, { tags: ["b"] }),
+  cleanupItem(211, "https://beta.test/x", "Beta 211", -1, { important: true }),
+  cleanupItem(212, "https://beta.test/x?utm_source=news", "Beta 212", -1),
+  cleanupItem(213, "https://beta.test/x#top", "Beta 213", -1),
+  cleanupItem(221, "https://gamma.test/a", "Gamma 221", 11),
+  cleanupItem(222, "https://gamma.test/a", "Gamma 222", 12),
+  cleanupItem(231, "https://delta.test/p", "Delta 231", 11, { important: true }),
+  cleanupItem(232, "https://delta.test/p", "Delta 232", 12, { note: "my reading note" }),
+  cleanupItem(241, "https://eps.test/q", "Eps 241", -1),
+  cleanupItem(242, "https://eps.test/q", "Eps 242", -1),
+  cleanupItem(250, "https://single.test/", "Single 250", -1),
+];
+
+/**
+ * Plan 0002 Phase 5: five duplicate groups. Sync First leads when the last sync is 3 h old. Choose
+ * Keeper changes a group's keeper. Trash All Extras asks once with the count, the sync age and the
+ * tag-merge undo limit, merges tags with a tags-only PUT, trashes in bulk and skips the annotated
+ * extra. Approving that group and Trash Extras empties the list; the rescan finds zero groups.
+ * ⌘Z restores the last operation to its original collection.
+ */
+async function flowCleanupDuplicates() {
+  return run("clean-up-bookmarks", {
+    seed: { bookmarks: DUPLICATE_ITEMS, state: { last_sync: String(Date.now() - 3 * 3_600_000) } },
+    server: { items: DUPLICATE_ITEMS },
+    interact: async (ctx) => {
+      assert.deepEqual(dropdownTitles(ctx), ["Duplicates", "Dead Links", "Unsure", "Skipped", "Ignored Hosts"], "the dropdown entries");
+      await waitFor(() => rowTitles(ctx).length === 5, `five groups: ${rowTitles(ctx)}`);
+      assert.deepEqual(rowTitles(ctx), ["Beta 211", "Alpha 201", "Delta 231", "Eps 241", "Gamma 221"], "each group shows its keeper title");
+      assert.deepEqual(accessoryTexts(ctx, "Beta 211"), ["3 bookmarks"], "each group shows its count");
+      assert.deepEqual(accessoryTexts(ctx, "Delta 231"), ["1 annotated", "2 bookmarks"], "the annotated extra is flagged");
+      const actions = itemActions(ctx, "Delta 231");
+      assert.equal(actions[0], "Sync First", `Sync First is the first action when the sync is old: ${actions}`);
+      for (const want of ["Trash Extras", "Include Annotated Extras", "Choose Keeper", "Open All", "Trash All Extras"]) {
+        assert.ok(actions.includes(want), `group action "${want}": ${actions}`);
+      }
+      assert.match(listNode(ctx).props.navigationTitle, /Synced 3 h ago/, "the title shows the sync age");
+      assert.equal(ctx.calls.length, 0, "duplicate detection sends no request");
+
+      await pressIn(ctx, "Eps 241", "Open All");
+      assert.deepEqual(ctx.opened, ["https://eps.test/q", "https://eps.test/q"], "Open All opens every bookmark of the group");
+
+      await pressIn(ctx, "Gamma 221", "Choose Keeper", 300);
+      await setField(ctx, "Form.Dropdown", "choice", "222");
+      await waitFor(() => rowTitles(ctx).includes("Gamma 222"), "the chosen keeper titles the group");
+
+      await pressIn(ctx, "Beta 211", "Trash All Extras", 100);
+      await waitFor(() => toastTitles(ctx).includes("Moved 5 bookmarks to Trash"), `the result toast: ${toastTitles(ctx)}`);
+      await waitFor(() => rowTitles(ctx).length === 1, `one group left: ${rowTitles(ctx)}`);
+      assert.equal(ctx.alerts.length, 1, "one confirmation for the bulk operation");
+      assert.equal(ctx.alerts[0].title, "Move 5 duplicates to Trash?", "the confirmation names the count");
+      assert.match(ctx.alerts[0].message, /^Synced 3 h ago\./, "the confirmation names the sync age");
+      assert.match(ctx.alerts[0].message, /leaves the merged tags on the keeper/, "the confirmation shows the tag-merge undo limit");
+      assert.match(ctx.alerts[0].message, /1 extra with notes or highlights stay/, "the confirmation names the skipped annotated extra");
+      const calls = ctx.calls.join("\n");
+      assert.ok(ctx.calls.includes('PUT /raindrop/201 {"tags":["a","b"]}'), `the keeper tag merge sends only tags: ${calls}`);
+      const trashed = ctx.calls.filter((c) => c.startsWith("DELETE /raindrops/")).flatMap((c) => JSON.parse(c.slice(c.indexOf("{"))).ids);
+      assert.deepEqual(trashed.sort(), [202, 212, 213, 221, 242], `bulk trash of the extras, keeper 222 kept: ${calls}`);
+      assert.ok(!sent(ctx.calls, /DELETE \/raindrops\/(-99|0) /), "no bulk delete on Trash or 0");
+      assert.deepEqual(rowTitles(ctx), ["Delta 231"], "the rescan keeps only the group with the unapproved annotated extra");
+      assert.ok(toastTitles(ctx).includes("Moved 5 bookmarks to Trash"), `the result toast: ${toastTitles(ctx)}`);
+
+      await pressIn(ctx, "Delta 231", "Include Annotated Extras");
+      assert.equal(ctx.alerts.length, 2, "approval asks first");
+      assert.deepEqual(accessoryTexts(ctx, "Delta 231"), ["1 annotated, approved", "2 bookmarks"], "the group shows the approval");
+      await pressIn(ctx, "Delta 231", "Trash Extras", 100);
+      await waitFor(() => toastTitles(ctx).includes("Moved 1 bookmark to Trash"), `the second result toast: ${toastTitles(ctx)}`);
+      await waitFor(() => rowTitles(ctx)[0] === "No duplicate groups", `zero groups after the rescan: ${rowTitles(ctx)}`);
+      assert.equal(ctx.alerts.length, 3, "one confirmation for the second operation");
+      assert.equal(ctx.alerts[2].title, "Move 1 duplicate to Trash?");
+      assert.ok(ctx.calls.includes('DELETE /raindrops/12 {"ids":[232]}'), `the approved annotated extra goes to Trash: ${ctx.calls}`);
+      const store = storeOf(ctx);
+      for (const id of [202, 212, 213, 221, 232, 242]) assert.equal((await store.getBookmark(id))?.collectionId, -99, `${id} is in Trash`);
+
+      await pressPrefix(ctx, "Undo Trash Extras", 100);
+      await waitFor(() => rowTitles(ctx).includes("Delta 231"), "⌘Z brings the last operation back");
+      assert.ok(ctx.calls.includes('PUT /raindrops/-99 {"ids":[232],"collection":{"$id":12}}'), `undo restores to the original collection: ${ctx.calls}`);
+      assert.equal((await store.getBookmark(232))?.collectionId, 12, "232 is back in its collection");
+      assert.equal((await store.getBookmark(202))?.collectionId, -99, "one ⌘Z undoes only the last operation");
+      assert.ok(toastTitles(ctx).includes("Undone: Trash Extras"), `the undo toast: ${toastTitles(ctx)}`);
+    },
+  });
+}
+
+/** The link-check bookmarks: one per result class, with fake answers keyed by URL. */
+const CHECK_ITEMS = [
+  cleanupItem(301, "https://dead.test/old", "Old dead page", 11),
+  cleanupItem(302, "https://dead.test/new", "New dead page", 11),
+  cleanupItem(303, "https://nohost.test/x", "No such host", 11),
+  cleanupItem(304, "https://forbidden.test/x", "Forbidden page", 11),
+  cleanupItem(305, "https://fine.test/x", "Fine page", 11),
+  cleanupItem(306, "https://moved.test/article/1", "Moved article", 11),
+  cleanupItem(307, "https://ignored.test/page", "Ignored page", 11),
+  cleanupItem(308, "http://localhost:3000/x", "Local page", 11),
+  cleanupItem(309, "https://fresh.test/x", "Fresh page", 11),
+];
+const DNS_MESSAGE = "A server with the specified hostname could not be found.";
+const CHECK_LINKS = {
+  "https://dead.test/old": () => ({ status: 404 }),
+  "https://dead.test/new": () => ({ status: 404 }),
+  "https://nohost.test/x": () => { throw new Error(DNS_MESSAGE); },
+  "https://forbidden.test/x": () => ({ status: 403 }),
+  "https://fine.test/x": () => ({ status: 200 }),
+  "https://moved.test/article/1": () => ({ status: 200, url: "https://moved.test/" }),
+};
+
+/**
+ * Plan 0002 Phase 5: the dead-link check. Opening Dead Links starts the check. A first 404 is saved
+ * as Retry pending and Trash All Dead leaves it out; a resumed pending row whose retry is due gets
+ * its GET retry and becomes dead. A thrown DNS-like error is unsure (the runtime cannot identify DNS
+ * failure). 403 is unsure, 200 is ok, a redirect to the home page is unsure, an ignored host and
+ * localhost are skipped with no request, and a fresh result is not checked again (resume).
+ */
+async function flowCleanupDeadLinks() {
+  const now = Date.now();
+  return run("clean-up-bookmarks", {
+    seed: {
+      bookmarks: CHECK_ITEMS,
+      state: { last_sync: String(now - 10 * 60_000) },
+      ignored: ["ignored.test"],
+      checks: [
+        // Closed during a scan: the first 404 came back 3 minutes ago, and the retry is due.
+        { bookmarkId: 301, url: "https://dead.test/old", class: "pending", status: 404, reason: "HTTP 404, retry pending", checkedAt: now - 180_000, firstDeadStatus: 404, firstDeadAt: now - 180_000, retryDue: now - 60_000 },
+        { bookmarkId: 309, url: "https://fresh.test/x", class: "ok", status: 200, reason: "HTTP 200", checkedAt: now - 3_600_000 },
+      ],
+    },
+    server: { items: CHECK_ITEMS, links: CHECK_LINKS },
+    interact: async (ctx) => {
+      assert.equal(ctx.linkCalls.length, 0, "the Duplicates view sends no link check");
+      await pickDropdown(ctx, "Dead Links");
+      await waitFor(() => toastTitles(ctx).includes("Waiting to retry 1 dead link"), `the waiting state: ${toastTitles(ctx)}`);
+      const titles = toastTitles(ctx);
+      assert.ok(titles.includes("Checking links"), `first-pass progress toast: ${titles}`);
+      const firstPass = [...ctx.toasts, ...ctx.updates].filter((t) => t.title === "Checking links").map((t) => t.message).filter(Boolean);
+      assert.ok(firstPass.some((m) => /^\d+ of 7/.test(m)), `first-pass progress counts the 7 new targets: ${firstPass}`);
+      assert.ok(titles.includes("Retrying dead links"), `retry progress toast: ${titles}`);
+      const waiting = [...ctx.toasts, ...ctx.updates].filter((t) => t.title === "Waiting to retry 1 dead link").at(-1);
+      assert.match(waiting.message ?? "", /^Next retry at \d\d:\d\d\. Closing keeps it pending\.$/, "the waiting toast names the retry time");
+      await waitFor(() => rowTitles(ctx).includes("New dead page") && rowTitles(ctx).includes("Old dead page"), `both dead rows: ${rowTitles(ctx)}`, 5000);
+
+      const store = storeOf(ctx);
+      const checks = new Map((await store.linkChecks()).map((c) => [c.bookmarkId, c]));
+      assert.equal(checks.get(301)?.class, "dead", "the resumed retry confirms the first 404");
+      assert.equal(checks.get(301)?.reason, "HTTP 404 on the first check and the retry");
+      assert.equal(checks.get(302)?.class, "pending", "a first 404 waits for its GET retry");
+      assert.ok((checks.get(302)?.retryDue ?? 0) >= now + 110_000, "the retry is due two minutes after the first result");
+      assert.equal(checks.get(303)?.class, "unsure", "a DNS-like thrown error is unsure");
+      // The harness passes a thrown stub error through JSON, so the message may arrive quoted.
+      assert.match(checks.get(303)?.reason ?? "", /^network error: "?A server with the specified hostname could not be found\."?$/, "the reason keeps the runtime message");
+      assert.deepEqual(checks.get(304) && [checks.get(304).class, checks.get(304).reason], ["unsure", "HTTP 403"], "403 is unsure");
+      assert.equal(checks.get(305)?.class, "ok", "200 is ok");
+      assert.deepEqual(checks.get(306) && [checks.get(306).class, checks.get(306).reason], ["unsure", "redirected to the home page"], "a home-page redirect is unsure");
+      assert.deepEqual(checks.get(307) && [checks.get(307).class, checks.get(307).reason], ["skipped", "ignored host"], "an ignored host is skipped");
+      assert.deepEqual(checks.get(308) && [checks.get(308).class, checks.get(308).reason], ["skipped", "localhost"], "localhost is skipped");
+      assert.equal(checks.get(309)?.checkedAt, now - 3_600_000, "a fresh result is kept");
+      const links = ctx.linkCalls;
+      assert.ok(links.includes("HEAD https://nohost.test/x") && links.includes("GET https://nohost.test/x"), `GET fallback after the error: ${links}`);
+      assert.deepEqual(links.filter((l) => l.includes("dead.test/old")), ["GET https://dead.test/old"], "resume sends only the GET retry");
+      assert.deepEqual(links.filter((l) => l.includes("dead.test/new")), ["HEAD https://dead.test/new"], "no retry before it is due");
+      for (const host of ["ignored.test", "localhost", "fresh.test"]) assert.ok(!links.some((l) => l.includes(host)), `no request to ${host}: ${links}`);
+      assert.equal(ctx.calls.length, 0, "the check sends no Raindrop call");
+
+      // Dead Links: the dead row and the Retry pending row with its retry time.
+      assert.deepEqual(rowTitles(ctx), ["Old dead page", "New dead page"], "dead first, then Retry pending");
+      assert.deepEqual(accessoryTexts(ctx, "Old dead page"), ["HTTP 404 on the first check and the retry", "Checked just now"], "reason and check time");
+      const [pendingReason, pendingTime] = accessoryTexts(ctx, "New dead page");
+      assert.equal(pendingReason, "Retry pending");
+      assert.match(pendingTime, /^Retry after \d\d:\d\d$/, "Retry pending shows the earliest retry time");
+      const sections = findAll(ctx.tree(), (n) => n.type === "List.Section").map((n) => n.props.title);
+      assert.deepEqual(sections, ["Dead", "Retry pending"], "the sections");
+      const deadActions = itemActions(ctx, "Old dead page");
+      for (const want of ["Open", "Trash", "Trash All Dead", "Ignore Host"]) assert.ok(deadActions.includes(want), `check action "${want}": ${deadActions}`);
+      assert.ok(!deadActions.includes("Sync First"), "no Sync First after a recent sync");
+      await pressIn(ctx, "Old dead page", "Open");
+      assert.deepEqual(ctx.opened, ["https://dead.test/old"], "Open before trash");
+
+      // Unsure and Skipped.
+      await pickDropdown(ctx, "Unsure");
+      assert.deepEqual(rowTitles(ctx), ["No such host", "Forbidden page", "Moved article"], "Unsure lists the error, the 403 and the home-page redirect");
+      await pickDropdown(ctx, "Skipped");
+      assert.deepEqual(rowTitles(ctx), ["Local page"], "Skipped hides the ignored host's row");
+      assert.ok(!itemActions(ctx, "Local page").includes("Ignore Host"), "no Ignore Host for an excluded link");
+
+      // Ignore Host hides the host's rows; Ignored Hosts lists both hosts; Stop Ignoring removes one.
+      await pickDropdown(ctx, "Unsure");
+      await pressIn(ctx, "Forbidden page", "Ignore Host", 900);
+      assert.deepEqual(rowTitles(ctx), ["No such host", "Moved article"], "the newly ignored host's row leaves the list");
+      await pickDropdown(ctx, "Ignored Hosts");
+      assert.deepEqual(rowTitles(ctx), ["forbidden.test", "ignored.test"], "the Ignored Hosts view");
+      await pressIn(ctx, "ignored.test", "Stop Ignoring", 900);
+      assert.deepEqual(rowTitles(ctx), ["forbidden.test"], "Stop Ignoring removes the host");
+      assert.equal((await store.linkChecks()).some((c) => c.bookmarkId === 307), false, "its skipped result is gone, so the next check covers it");
+
+      // Trash All Dead: one confirmation, only class dead; the pending 404 stays.
+      await pickDropdown(ctx, "Dead Links");
+      await pressIn(ctx, "New dead page", "Trash All Dead", 100);
+      await waitFor(() => toastTitles(ctx).includes("Moved 1 bookmark to Trash"), `the result toast: ${toastTitles(ctx)}`);
+      await waitFor(() => !rowTitles(ctx).includes("Old dead page"), "the trashed row leaves the list");
+      const alert = ctx.alerts.at(-1);
+      assert.equal(ctx.alerts.length, 1, "one confirmation");
+      assert.equal(alert.title, "Move 1 dead link to Trash?", "the count leaves out the pending row");
+      assert.match(alert.message, /^Synced 10 min ago\./, "the confirmation names the sync age");
+      assert.deepEqual(ctx.calls, ['DELETE /raindrops/11 {"ids":[301]}'], "bulk trash of the confirmed dead row only");
+      assert.deepEqual(rowTitles(ctx), ["New dead page"], "the pending row stays until its retry");
+      assert.equal((await store.getBookmark(301))?.collectionId, -99, "301 is in Trash");
+      assert.ok(itemActions(ctx, "New dead page").includes("Undo Trash All Dead"), "⌘Z offers the cleanup undo");
+    },
+  });
+}
+
 const ONLY = process.env.ONLY;
 const FLOWS_ALL = [
   flowSignedOut, flowSearch, flowSignIn, flowTokenRejected, flowSignOut,
@@ -959,6 +1234,8 @@ const FLOWS_ALL = [
   flowTrashConfirmation,
   flowPageDetails,
   flowAddDefaultsAndTags,
+  flowCleanupDuplicates,
+  flowCleanupDeadLinks,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

@@ -28,6 +28,13 @@
       "mode": "view"
     },
     {
+      "name": "clean-up-bookmarks",
+      "title": "Clean Up Bookmarks",
+      "subtitle": "Raindrop",
+      "description": "Find duplicate and dead links, then move them to Raindrop Trash.",
+      "mode": "view"
+    },
+    {
       "name": "sync",
       "title": "Sync",
       "subtitle": "Raindrop",
