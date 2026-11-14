@@ -30,6 +30,7 @@ The following decisions include the choices from both grill rounds. Asked decisi
 | Home-page redirect | Classify a redirect from a non-root path to `/` on the same site as `unsure`. A successful HTTP status does not override this rule. | Q6 asked |
 | Exclusions | Skip non-HTTP links, localhost, private IP addresses, and `.local` hosts. Show the reason as skipped. Ignore Host adds an exact host to a local list for dead-link checks. | Q2 defaulted; Q7 asked |
 | Ignore management | Ignore Host affects only dead-link checks. Duplicate groups remain visible. An Ignored Hosts dropdown entry has a Stop Ignoring action. | Q12 and Q13 defaulted |
+| Redirect exclusions | Tinycast's native fetch follows redirects before the checker sees them, so it cannot reject an excluded redirect hop. Skip a bookmark whose own URL is excluded. Classify an excluded final URL as skipped. Send only HEAD and a GET limited to one byte with a `Range` header. The owner accepts the remaining risk. | Phase 1 finding; owner accepted 2026-11-14 |
 | Request pace | Run at most six requests at once and one request per host. Raindrop writes use the existing API pacer. Link checks use a separate limiter. | Initial planning |
 | Local state | Add `link_checks` and `ignored_hosts`. Both use `CHECKS_VERSION` and survive a mirror schema reset. Store bookmark data in SQLite, never Cache. | Initial planning; Q14 defaulted |
 | Resume | Save each result as it arrives. Resume missing results, results older than 30 days, and pending retries. A changed bookmark URL invalidates its old result. | Initial planning |
@@ -79,7 +80,7 @@ A failed tag update leaves that group's extras untouched. Batch undo restores co
 
 ## Implementation phases
 
-### Phase 1: verify the API and Tinycast runtime
+### Phase 1: verify the API and Tinycast runtime (built 2026-11-14)
 
 Prerequisites: the implementation machine has dependencies, an ignored `.env` with `RAINDROP_TOKEN`, and the owner-supplied Tinycast checkout.
 
@@ -96,7 +97,7 @@ Prerequisites: the implementation machine has dependencies, an ignored `.env` wi
 
 Done when the report records evidence for every required capability and the library and Trash contain no probe bookmarks. A missing capability requires a documented safe fallback. If Tinycast cannot enforce a timeout or the host exclusions, stop the affected checker work. Do not claim that a Node test proves native fetch behavior.
 
-### Phase 2: duplicate detection
+### Phase 2: duplicate detection (built 2026-11-14)
 
 - Extend `normalizeLink()` with the settled key rules.
 - Add `src/cleanup/duplicates.ts` for groups, keeper selection, and annotation warnings.
@@ -104,7 +105,7 @@ Done when the report records evidence for every required capability and the libr
 
 Done when tests cover scheme and host variants, fragments, hash routes, tracking parameters, retained `ref`, query order, repeated parameters, and invalid input. Tests also cover keeper order, equal values, collection preference, annotation warnings, and the Add form warning.
 
-### Phase 3: resumable dead-link checks
+### Phase 3: resumable dead-link checks (built 2026-11-14)
 
 - Add both local tables and their version handling.
 - Add `src/cleanup/linkcheck.ts` with an injectable fetch function and clock.
@@ -115,7 +116,7 @@ Done when tests cover scheme and host variants, fragments, hash routes, tracking
 
 Done when tests prove each result class, GET fallback, delayed retry, pending retry resume, and the request limits. Include host exclusion and redirect tests. Store tests must prove that both tables survive a mirror reset and changed URLs invalidate old checks.
 
-### Phase 4: bulk cleanup and undo
+### Phase 4: bulk cleanup and undo (built 2026-11-14)
 
 - Add verified bulk methods to the API client.
 - Add tag merge and batch trash to the writer.
@@ -124,7 +125,7 @@ Done when tests prove each result class, GET fallback, delayed retry, pending re
 
 Done when tests cover 150 bookmarks across two batches, multiple original collections, failed tag updates, partial trash failure, and ambiguous responses. Include partial undo failure and retry. Verify that tag updates send only `tags` and undo works after sync removes local Trash rows.
 
-### Phase 5: command and runtime checks
+### Phase 5: command and runtime checks (built 2026-11-14)
 
 - Add the command to `src/manifest.json`.
 - Build the screen with the existing Raycast List components.
