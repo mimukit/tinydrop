@@ -21,7 +21,7 @@ Store tests call a real `sqlite3` binary and skip with a printed reason when non
 ## Rules for agents
 
 - Do not add the Raycast CLI (`ray`) or `@raycast/utils`. The build is `scripts/build.mjs`.
-- Keep `src/api/`, `src/store/`, `src/sync/`, `src/search/`, `src/parse/`, `src/undo/` and `src/write/` free of `@raycast/api` imports, so Vitest can run them in Node.
+- Keep `src/api/`, `src/store/`, `src/sync/`, `src/search/`, `src/parse/`, `src/undo/`, `src/write/` and `src/cleanup/` free of `@raycast/api` imports, so Vitest can run them in Node.
 - Never store a secret in a preference, `LocalStorage` or `Cache`. Tinycast keeps those as plaintext JSON. The token goes through `src/auth/secrets.ts` to the Keychain.
 - Never build a SQL literal by hand. Use `sqlString()` and `ftsTerm()` in `src/store/sql.ts`, because the `sqlite3` CLI has no bind parameters.
 - Never put bookmark data in `Cache`. The store is the SQLite file in `environment.supportPath`.

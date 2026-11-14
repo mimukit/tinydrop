@@ -21,18 +21,48 @@ export function isHttpUrl(text: string | undefined): boolean {
   return httpUrl(text) !== undefined;
 }
 
+/** Query parameters that only track a click. `ref` is not one: it can pick the page. */
+const TRACKING_PARAM = /^(utm_.*|fbclid|gclid|mc_cid|mc_eid|ref_src)$/i;
+
+/** The decoded name of one raw `name=value` query pair. */
+function paramName(pair: string): string {
+  const name = pair.split("=", 1)[0];
+  try {
+    return decodeURIComponent(name.replace(/\+/g, " "));
+  } catch {
+    return name;
+  }
+}
+
+/** The raw query pairs without tracking parameters, sorted by name; repeated names keep their order. */
+function keptQuery(search: string): string[] {
+  return search
+    .slice(1)
+    .split("&")
+    .filter(Boolean)
+    .map((pair) => ({ pair, name: paramName(pair) }))
+    .filter((p) => !TRACKING_PARAM.test(p.name))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .map((p) => p.pair);
+}
+
 /**
- * The link the duplicate check compares: lowercase host, no `utm_*` parameters, no trailing `/`.
- * A text that is not a URL comes back trimmed.
+ * The duplicate key. For an http(s) URL: the host in lowercase without a leading `www.`, http and
+ * https as one, no trailing path `/`, no ordinary fragment (a `#/` or `#!` hash route stays), no
+ * tracking parameters (`utm_*`, `fbclid`, `gclid`, `mc_cid`, `mc_eid`, `ref_src`; `ref` stays), and
+ * the other parameters sorted by name. Credentials and a non-default port stay.
+ * A text that is not an http(s) URL comes back trimmed.
  */
 export function normalizeLink(link: string): string {
   const url = httpUrl(link);
   if (!url) return link.trim();
-  for (const key of [...url.searchParams.keys()]) if (/^utm_/i.test(key)) url.searchParams.delete(key);
-  const search = url.searchParams.toString();
+  const query = keptQuery(url.search);
   const path = url.pathname.replace(/\/+$/, "");
   const auth = url.username ? `${url.username}${url.password ? `:${url.password}` : ""}@` : "";
-  return `${url.protocol}//${auth}${url.host.toLowerCase()}${path}${search ? `?${search}` : ""}${url.hash}`.replace(/\/+$/, "");
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const port = url.port ? `:${url.port}` : "";
+  const hash = /^#[/!]/.test(url.hash) ? url.hash : "";
+  return `https://${auth}${host}${port}${path}${query.length ? `?${query.join("&")}` : ""}${hash}`;
 }
 
 export interface Duplicate {
@@ -41,7 +71,7 @@ export interface Duplicate {
   collection: string;
 }
 
-/** The first stored bookmark with the same normalized link, outside Trash. */
+/** The first stored bookmark with the same duplicate key (`normalizeLink()`), outside Trash. */
 export async function findDuplicate(
   store: Pick<BookmarkStore, "findByHost">,
   link: string,
