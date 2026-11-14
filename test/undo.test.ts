@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RaindropApiError } from "../src/api/errors";
-import type { Raindrop, RaindropPatch } from "../src/api/types";
+import type { BulkReply, Raindrop, RaindropPatch } from "../src/api/types";
 import { defaultBinary, SqliteStore } from "../src/store/sqlite";
 import type { BookmarkRow } from "../src/store/types";
 import { UNDO_LIMIT, UndoStack, changedFields, previousFields, type UndoEntry } from "../src/undo/stack";
@@ -63,6 +63,17 @@ class FakeClient implements WriterClient {
     if (this.failWith) throw this.failWith;
     return { _id: 900, link: patch.link!, title: patch.title ?? "Parsed", collection: patch.collection, tags: patch.tags };
   }
+
+  // Bulk cleanup has its own tests in cleanup-writer.test.ts.
+  async getRaindrop(): Promise<Raindrop> {
+    throw new Error("not used");
+  }
+  async trashRaindrops(): Promise<BulkReply> {
+    throw new Error("not used");
+  }
+  async restoreRaindrops(): Promise<BulkReply> {
+    throw new Error("not used");
+  }
 }
 
 /** An in-memory store with the writer's three methods. */
@@ -84,6 +95,8 @@ class FakeStore implements WriterStore {
       });
     }
   }
+  async trashLocal() {}
+  async restoreLocal() {}
 }
 
 function setup(rows: BookmarkRow[]) {
@@ -103,7 +116,7 @@ describe("UndoStack", () => {
     expect(stack.size).toBe(10);
     const popped: number[] = [];
     let e: UndoEntry | undefined;
-    while ((e = stack.pop())) popped.push(e.bookmarkId);
+    while ((e = stack.pop())) if (e.kind !== "cleanup") popped.push(e.bookmarkId);
     expect(popped).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
   });
 
@@ -112,7 +125,7 @@ describe("UndoStack", () => {
     const { writer } = setup(rows);
     for (const r of rows) await writer.update(r, { important: true }, { label: "Favorite" });
     expect(writer.undo.size).toBe(10);
-    expect(writer.undo.peek()?.bookmarkId).toBe(12);
+    expect(writer.undo.peek()).toMatchObject({ bookmarkId: 12 });
   });
 
   it("changedFields and previousFields carry only what differs", () => {

@@ -88,6 +88,13 @@ export interface ItemReply<T> {
   item: T;
 }
 
+/** The reply of a bulk call: no per-ID detail. `modified` below the ID count means some IDs did not move. */
+export interface BulkReply {
+  result: boolean;
+  matched?: number;
+  modified?: number;
+}
+
 export interface UserReply {
   result: boolean;
   user: User;

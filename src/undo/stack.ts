@@ -1,7 +1,7 @@
 // The per-window undo stack. Copied from tinytick and adapted to bookmarks. It
 // lives in memory, so it ends when the window closes. No @raycast/api import here.
 import type { RaindropPatch } from "../api/types";
-import type { BookmarkRow } from "../store/types";
+import type { BookmarkRow, CollectionMove } from "../store/types";
 
 export type UndoEntry =
   /** Restore these fields with one `PUT /raindrop/{id}`. */
@@ -9,7 +9,15 @@ export type UndoEntry =
   /** Move a bookmark back to the collection it came from. */
   | { kind: "move"; label: string; bookmarkId: number; fromCollectionId: number; toCollectionId: number }
   /** Bring a bookmark back from Trash: `PUT /raindrop/{id}` with its old `collection.$id`. */
-  | { kind: "trash"; label: string; bookmarkId: number; collectionId: number };
+  | { kind: "trash"; label: string; bookmarkId: number; collectionId: number }
+  /**
+   * Bring back every bookmark one bulk cleanup moved to Trash, each to its original collection:
+   * `PUT /raindrops/-99` per collection and batch. Holds only the IDs Raindrop confirmed in Trash.
+   * It needs no local row, so it still works after a sync dropped the Trash rows. Merged tags stay.
+   */
+  | { kind: "cleanup"; label: string; items: CollectionMove[] };
+
+export type CleanupUndoEntry = Extract<UndoEntry, { kind: "cleanup" }>;
 
 export const UNDO_LIMIT = 10;
 

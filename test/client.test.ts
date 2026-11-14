@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RaindropClient, Pacer } from "../src/api/client";
-import { RaindropApiError, isTokenRejected } from "../src/api/errors";
+import { BulkGuardError, RaindropApiError, isTokenRejected } from "../src/api/errors";
 import { percentile, TimeRing } from "../src/store/timing";
 
 function fakeFetch(replies: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>) {
@@ -120,5 +120,56 @@ describe("RaindropClient rate limit error", () => {
     expect(error).toBeInstanceOf(RaindropApiError);
     expect(error.isRateLimit).toBe(true);
     expect(error.rateLimitReset).toBe("42");
+  });
+});
+
+describe("RaindropClient bulk calls", () => {
+  const moved = (n: number) => ({ status: 200, body: { result: true, matched: n, modified: n } });
+
+  it("trashes with DELETE /raindrops/{sourceCollectionId} and only `ids` in the body", async () => {
+    const { fetch, calls } = fakeFetch([moved(2)]);
+    const client = new RaindropClient("tok", { ...noWait, fetch });
+    expect(await client.trashRaindrops(5, [1, 2])).toEqual({ result: true, matched: 2, modified: 2 });
+    expect(calls[0].url).toBe("https://api.raindrop.io/rest/v1/raindrops/5");
+    expect(calls[0].init?.method).toBe("DELETE");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ ids: [1, 2] });
+  });
+
+  it("restores with PUT /raindrops/-99, `ids` and the original collection.$id", async () => {
+    const { fetch, calls } = fakeFetch([moved(1)]);
+    const client = new RaindropClient("tok", { ...noWait, fetch });
+    expect(await client.restoreRaindrops(12, [3])).toEqual({ result: true, matched: 1, modified: 1 });
+    expect(calls[0].url).toBe("https://api.raindrop.io/rest/v1/raindrops/-99");
+    expect(calls[0].init?.method).toBe("PUT");
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ ids: [3], collection: { $id: 12 } });
+  });
+
+  it("refuses a bulk DELETE to -99 or 0, and any bulk call without ids, before a request goes out", async () => {
+    const { fetch, calls } = fakeFetch([]);
+    const client = new RaindropClient("tok", { ...noWait, fetch });
+    const refused = [
+      () => client.trashRaindrops(-99, [1]),
+      () => client.trashRaindrops(0, [1]),
+      () => client.trashRaindrops(5, []),
+      () => client.restoreRaindrops(5, []),
+      () => client.trashRaindrops(5, Array.from({ length: 101 }, (_, i) => i + 1)),
+      () => client.trashRaindrops(5, [1.5]),
+      () => client.request("DELETE", "/raindrops/-99", { ids: [1] }),
+      () => client.request("DELETE", "/raindrops/0", { ids: [1] }),
+      () => client.request("DELETE", "/raindrops/5"),
+      () => client.request("DELETE", "/raindrops/5", { search: "x" }),
+      () => client.request("DELETE", "/raindrops/5", { ids: [1], search: "x" }),
+      () => client.request("PUT", "/raindrops/-99", { collection: { $id: 3 } }),
+    ];
+    for (const call of refused) await expect(call()).rejects.toBeInstanceOf(BulkGuardError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("lets single-bookmark calls and collection reads through the guard", async () => {
+    const { fetch, calls } = fakeFetch([{ status: 200, body: { result: true } }, { status: 200, body: { result: true, items: [] } }]);
+    const client = new RaindropClient("tok", { ...noWait, fetch });
+    await client.deleteRaindrop(7);
+    await client.getRaindrops(-99);
+    expect(calls.map((c) => c.init?.method)).toEqual(["DELETE", "GET"]);
   });
 });

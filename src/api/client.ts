@@ -1,9 +1,11 @@
 // A typed client for the Raindrop REST API. Every call goes through one pacer
 // (2 calls per second), every GET carries a `_=<timestamp>` nonce against the
 // server cache, and a 429 waits for `X-RateLimit-Reset` before it tries again.
-import { RaindropApiError } from "./errors";
+import { BulkGuardError, RaindropApiError } from "./errors";
 import { MIN_GAP_MS, paceWaitMs, resetWaitMs, withNonce } from "./pace";
+import { ALL_COLLECTION, TRASH_COLLECTION } from "./types";
 import type {
+  BulkReply,
   Collection,
   ItemReply,
   ItemsReply,
@@ -44,6 +46,29 @@ export class Pacer {
 
 const sharedPacer = new Pacer();
 
+/** The most IDs one bulk call carries. */
+export const BULK_LIMIT = 100;
+
+/**
+ * Throws BulkGuardError for a bulk write the client must never send. A bulk write is any non-GET call
+ * on `/raindrops/{collectionId}`. It needs 1 to 100 integer `ids` and no `search`, so it never touches
+ * a whole collection. A DELETE to -99 deletes for good and a DELETE to 0 is unsupported: both are refused.
+ */
+export function assertSafeBulk(method: string, path: string, body: unknown): void {
+  const match = /^\/raindrops\/(-?\d+)(?:[/?]|$)/.exec(path);
+  if (!match || method === "GET") return;
+  const collectionId = Number(match[1]);
+  if (method === "DELETE" && (collectionId === TRASH_COLLECTION || collectionId === ALL_COLLECTION)) {
+    throw new BulkGuardError(`Refused a bulk DELETE to collection ${collectionId}`);
+  }
+  const fields = (body ?? {}) as { ids?: unknown; search?: unknown };
+  if ("search" in fields) throw new BulkGuardError("Refused a bulk call with a search");
+  const ids = fields.ids;
+  if (!Array.isArray(ids) || ids.length === 0) throw new BulkGuardError("Refused a bulk call without ids");
+  if (ids.length > BULK_LIMIT) throw new BulkGuardError(`Refused a bulk call with ${ids.length} ids (at most ${BULK_LIMIT})`);
+  if (!ids.every((id) => Number.isSafeInteger(id) && id > 0)) throw new BulkGuardError("Refused a bulk call with an invalid id");
+}
+
 export interface ClientOptions {
   fetch?: FetchLike;
   pacer?: Pacer;
@@ -82,6 +107,7 @@ export class RaindropClient {
   }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    assertSafeBulk(method, path, body);
     for (let attempt = 0; ; attempt++) {
       await this.pacer.next();
       let url = `${this.baseUrl}${path}`;
@@ -146,6 +172,19 @@ export class RaindropClient {
   /** Moves a bookmark to Trash, or removes it for good when it is in Trash already. */
   async deleteRaindrop(id: number): Promise<void> {
     await this.request<unknown>("DELETE", `/raindrop/${id}`);
+  }
+
+  /**
+   * Moves bookmarks to Trash: `DELETE /raindrops/{sourceCollectionId}` with `{ ids }`. Every ID must
+   * be in that collection now. Never `0` (unsupported) or `-99` (that deletes for good).
+   */
+  async trashRaindrops(sourceCollectionId: number, ids: number[]): Promise<BulkReply> {
+    return this.request<BulkReply>("DELETE", `/raindrops/${sourceCollectionId}`, { ids });
+  }
+
+  /** Brings bookmarks back from Trash: `PUT /raindrops/-99` with `{ ids, collection: { $id } }`. */
+  async restoreRaindrops(toCollectionId: number, ids: number[]): Promise<BulkReply> {
+    return this.request<BulkReply>("PUT", `/raindrops/${TRASH_COLLECTION}`, { ids, collection: { $id: toCollectionId } });
   }
 
   async getCollections(): Promise<Collection[]> {

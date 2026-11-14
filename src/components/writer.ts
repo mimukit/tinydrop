@@ -14,6 +14,8 @@ const lazyStore: WriterStore = {
   getBookmark: async (id) => (await openStore()).getBookmark(id),
   saveRow: async (row) => (await openStore()).saveRow(row),
   upsertPage: async (items, options) => (await openStore()).upsertPage(items, options),
+  trashLocal: async (ids) => (await openStore()).trashLocal(ids),
+  restoreLocal: async (moves) => (await openStore()).restoreLocal(moves),
 };
 
 async function client(): Promise<RaindropClient> {

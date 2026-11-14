@@ -38,6 +38,17 @@ export class RaindropApiError extends Error {
   }
 }
 
+/**
+ * The client refused a bulk call before it went out: a DELETE to Trash (-99, which deletes for good)
+ * or to all (0, unsupported), or a call with no `ids`, too many `ids`, or a `search`. Nothing changed.
+ */
+export class BulkGuardError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BulkGuardError";
+  }
+}
+
 /** True when the error means the token is no longer valid. */
 export function isTokenRejected(error: unknown): boolean {
   return error instanceof RaindropApiError && error.isTokenRejected;
