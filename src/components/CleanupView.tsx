@@ -536,7 +536,7 @@ export function CleanupView() {
         title={text.title}
         subtitle={text.host}
         icon={check.class === "dead" ? { source: Icon.XMarkCircle, tintColor: Color.Red } : check.class === "pending" ? Icon.Clock : Icon.QuestionMarkCircle}
-        accessories={[{ text: text.reason }, { text: text.time }]}
+        accessories={[{ text: text.reason, tooltip: check.reason }, { text: text.time }]}
         actions={
           <ActionPanel>
             {syncFirst}

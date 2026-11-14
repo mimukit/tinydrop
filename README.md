@@ -105,6 +105,8 @@ Enter a URL in Add Bookmark. Press `⌘R` or select Fetch Page Details from Acti
 
 Clean Up Bookmarks opens in Duplicates. Select Dead Links or Unsure to start or resume the link check.
 
+The list uses short result labels to leave space for bookmark titles and hosts. Hover over a result label to read the full reason.
+
 In Clean Up Bookmarks, select a bookmark in Dead Links or Unsure. Press `⌘E` or select Edit Bookmark from Actions. Change the URL or other fields, then press `⌘S` to save. Press `⌘Z` in the list to undo the edit. The form uses the same fields as the Search editor.
 
 A changed URL no longer shows its old check result. Open the check view again to check the new URL. Pending retries in Dead Links also offer Edit Bookmark.

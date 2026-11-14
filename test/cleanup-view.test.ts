@@ -107,10 +107,10 @@ describe("row text", () => {
   });
 
   it("shows host, reason and check time, and Retry pending with its retry time", () => {
-    expect(checkRowText(check(2, "https://a.test/2", "dead"), NOW)).toEqual({
+    expect(checkRowText(check(2, "https://a.test/2", "dead", { status: 404 }), NOW)).toEqual({
       title: "Check 2",
       host: "a.test",
-      reason: "HTTP 404 on the first check and the retry",
+      reason: "HTTP 404, confirmed",
       time: "Checked 5 min ago",
     });
     const pending = checkRowText(check(1, "https://a.test/1", "pending", { reason: "HTTP 404, retry pending", retryDue: new Date(2026, 10, 14, 15, 2).getTime() }), NOW);
@@ -120,6 +120,27 @@ describe("row text", () => {
 
   it("falls back to the URL for an empty title", () => {
     expect(checkRowText(check(2, "https://a.test/2", "dead", { title: "" }), NOW).title).toBe("https://a.test/2");
+  });
+
+  it.each([
+    ["network error: A server with the specified hostname could not be found.", "Network error"],
+    ["network error: The resource could not be loaded because the App Transport Security policy requires the use of a secure connection.", "HTTPS required"],
+    ['network error: "The request failed."', "Network error"],
+    ["HTTP 403", "HTTP 403"],
+    ["timeout", "timeout"],
+    ["redirected to the home page", "Home-page redirect"],
+  ])("uses a compact label for %s", (reason, expected) => {
+    const row = check(1, "https://a.test/1", "unsure", { reason });
+    expect(checkRowText(row, NOW).reason).toBe(expected);
+    expect(row.reason).toBe(reason);
+  });
+
+  it("limits unknown reasons to 28 characters and removes line breaks", () => {
+    const reason = "Unexpected\n\tresponse with a very long explanation";
+    const text = checkRowText(check(1, "https://a.test/1", "unsure", { reason }), NOW).reason;
+    expect(text).toBe("Unexpected response with a…");
+    expect(text.length).toBeLessThanOrEqual(28);
+    expect(text).not.toMatch(/[\r\n\t]/);
   });
 });
 

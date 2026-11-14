@@ -1183,7 +1183,7 @@ async function flowCleanupDeadLinks() {
 
       // Dead Links: the dead row and the Retry pending row with its retry time.
       assert.deepEqual(rowTitles(ctx), ["Old dead page", "New dead page"], "dead first, then Retry pending");
-      assert.deepEqual(accessoryTexts(ctx, "Old dead page"), ["HTTP 404 on the first check and the retry", "Checked just now"], "reason and check time");
+      assert.deepEqual(accessoryTexts(ctx, "Old dead page"), ["HTTP 404, confirmed", "Checked just now"], "compact reason and check time");
       const [pendingReason, pendingTime] = accessoryTexts(ctx, "New dead page");
       assert.equal(pendingReason, "Retry pending");
       assert.match(pendingTime, /^Retry after \d\d:\d\d$/, "Retry pending shows the earliest retry time");
@@ -1225,6 +1225,35 @@ async function flowCleanupDeadLinks() {
       assert.deepEqual(rowTitles(ctx), ["New dead page"], "the pending row stays until its retry");
       assert.equal((await store.getBookmark(301))?.collectionId, -99, "301 is in Trash");
       assert.ok(itemActions(ctx, "New dead page").includes("Undo Trash All Dead"), "⌘Z offers the cleanup undo");
+    },
+  });
+}
+
+async function flowCleanupCompactReasons() {
+  const reasons = [
+    "network error: A server with the specified hostname could not be found.",
+    "network error: The resource could not be loaded because the App Transport Security policy requires the use of a secure connection.",
+    "An unexpected response contains a long explanation that cannot fit in the list.",
+  ];
+  const bookmarks = reasons.map((_, i) => cleanupItem(410 + i, `https://reason${i}.test/page`, `Reason ${i}`, 11));
+  return run("clean-up-bookmarks", {
+    seed: {
+      bookmarks,
+      checks: bookmarks.map((b, i) => ({ bookmarkId: b._id, url: b.link, class: "unsure", reason: reasons[i], checkedAt: Date.now() })),
+    },
+    interact: async (ctx) => {
+      await pickDropdown(ctx, "Unsure");
+      for (let i = 0; i < bookmarks.length; i++) {
+        const item = itemTitled(ctx, bookmarks[i].title);
+        assert.equal(item.props.subtitle, `reason${i}.test`, "the host stays in the subtitle");
+        const accessory = item.props.accessories[0];
+        assert.ok(Array.from(accessory.text).length <= 28, "each reason label has at most 28 characters");
+        assert.equal(accessory.tooltip, reasons[i], "the tooltip contains the full reason");
+      }
+      assert.equal(accessoryTexts(ctx, "Reason 0")[0], "Network error");
+      assert.equal(accessoryTexts(ctx, "Reason 1")[0], "HTTPS required");
+      assert.deepEqual((await storeOf(ctx).linkChecks()).map((c) => c.reason), reasons, "the stored reasons stay complete");
+      assert.equal(ctx.linkCalls.length, 0, "the display change sends no link request");
     },
   });
 }
@@ -1389,6 +1418,7 @@ const FLOWS_ALL = [
   flowCleanupDeadLinksCsv,
   flowCleanupEditLinks,
   flowCleanupMarkLive,
+  flowCleanupCompactReasons,
 ];
 /** `ONLY=flowName pnpm smoke …` runs one flow. */
 const FLOWS = ONLY ? FLOWS_ALL.filter((f) => f.name === ONLY) : FLOWS_ALL;

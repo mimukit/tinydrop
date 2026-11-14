@@ -89,13 +89,26 @@ export function checkedAgo(at: number, now: number): string {
   return `Checked ${plural(Math.floor(hours / 24), "day")} ago`;
 }
 
-/** The title, host, result reason and time of one checked bookmark. A pending row shows its retry time. */
+/** Keep native list accessories short. The row's stored reason supplies the full tooltip. */
+function reasonLabel(row: LinkCheckListRow): string {
+  const reason = row.reason.replace(/\s+/g, " ").trim();
+  const lower = reason.toLowerCase();
+  if (lower.startsWith("network error:")) {
+    return lower.includes("app transport security") && lower.includes("secure connection") ? "HTTPS required" : "Network error";
+  }
+  if (row.class === "dead" && row.status !== undefined) return `HTTP ${row.status}, confirmed`;
+  if (reason === "redirected to the home page") return "Home-page redirect";
+  const chars = Array.from(reason);
+  return chars.length > 28 ? `${chars.slice(0, 27).join("").trimEnd()}…` : reason;
+}
+
+/** The title, host, compact result reason and time. A pending row shows its retry time. */
 export function checkRowText(row: LinkCheckListRow, now: number): { title: string; host: string; reason: string; time: string } {
   const host = hostOf(row.url) ?? "";
   if (row.class === "pending") {
     return { title: row.title || row.url, host, reason: "Retry pending", time: row.retryDue !== undefined ? `Retry after ${clockTime(row.retryDue)}` : checkedAgo(row.checkedAt, now) };
   }
-  return { title: row.title || row.url, host, reason: row.reason, time: checkedAgo(row.checkedAt, now) };
+  return { title: row.title || row.url, host, reason: reasonLabel(row), time: checkedAgo(row.checkedAt, now) };
 }
 
 export interface ToastText {
