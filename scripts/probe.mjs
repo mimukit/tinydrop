@@ -6,6 +6,13 @@
 // request header and never prints the token.
 //
 // Usage: set -a; . ./.env; set +a; pnpm probe > .afkkit/logs/probe.json
+//
+// PROBE_ONLY=cleanup runs only the token check and the bulk cleanup section (plan 0002,
+// Phase 1). That section makes two probe bookmarks in Unsorted, moves them to Trash and
+// back with the bulk endpoints, and always passes an explicit `ids` array holding only
+// those two IDs. It never sends a bulk call without `ids` or with a search filter, and it
+// never sends a bulk call to collection 0 or -99 with DELETE. Cleanup deletes the two
+// probes one by one in a `finally` block.
 
 import { MIN_GAP_MS, paceWaitMs, pagesFor, resetWaitMs, scaleByPages, withNonce } from "../src/api/pace.ts";
 
@@ -15,6 +22,16 @@ const PROBE_LINK = "https://example.com/tinydrop-probe";
 const HIGHLIGHT = { text: "Example Domain", note: "tinydrop probe highlight" };
 const TOKEN_FIRST_SEEN = "2026-11-05";
 const UNSORTED = -1;
+const CLEANUP_PROBES = [
+  { title: "tinydrop cleanup probe A", link: "https://example.com/tinydrop-cleanup-probe-a" },
+  { title: "tinydrop cleanup probe B", link: "https://example.com/tinydrop-cleanup-probe-b" },
+];
+const CLEANUP_LINKS = new Set(CLEANUP_PROBES.map((p) => p.link));
+const ONLY = process.env.PROBE_ONLY ?? "";
+if (ONLY !== "" && ONLY !== "cleanup") {
+  console.error(`PROBE_ONLY must be empty or "cleanup", not "${ONLY}"`);
+  process.exit(2);
+}
 const TRASH = -99;
 
 const token = process.env.RAINDROP_TOKEN;
@@ -66,6 +83,8 @@ async function api(method, path, { body, nonce = true } = {}) {
 }
 
 const isProbe = (item) => item && item.link === PROBE_LINK;
+const isCleanupProbe = (item) => Boolean(item) && CLEANUP_LINKS.has(item.link);
+const isAnyProbe = (item) => isProbe(item) || isCleanupProbe(item);
 const findProbe = (items, id) => (items ?? []).find((it) => (id === undefined ? isProbe(it) : it._id === id));
 const yesterday = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 const errText = (e) => (e instanceof Error ? e.message : String(e));
@@ -83,6 +102,7 @@ const result = {
   putRestore: {},
   cleanup: {},
   pagePass: {},
+  bulk: {},
   totals: {},
   errors: [],
 };
@@ -92,7 +112,7 @@ async function findLeftovers() {
   const found = [];
   for (const coll of [0, TRASH]) {
     const r = await api("GET", `/raindrops/${coll}?search=${encodeURIComponent("tinydrop")}&perpage=50`);
-    for (const it of r.body.items ?? []) if (isProbe(it)) found.push({ id: it._id, collection: coll });
+    for (const it of r.body.items ?? []) if (isAnyProbe(it)) found.push({ id: it._id, collection: coll });
   }
   return found;
 }
@@ -314,6 +334,128 @@ async function pagePass() {
   };
 }
 
+/** A bulk call with an explicit, non-empty ids array of probe IDs only. Refuses anything else. */
+async function bulkCall(method, collection, ids, extra = {}) {
+  if (!Array.isArray(ids) || ids.length === 0) throw new Error("bulk call without ids refused");
+  if (!ids.every((id) => bulkProbeIds.has(id))) throw new Error("bulk call with a non-probe id refused");
+  if (method === "DELETE" && (collection === 0 || collection === TRASH)) {
+    throw new Error(`bulk DELETE to collection ${collection} refused`);
+  }
+  if (method === "PUT" && collection === 0) throw new Error("bulk PUT to collection 0 refused");
+  const r = await api(method, `/raindrops/${collection}`, { body: { ...extra, ids } });
+  return { request: `${method} /raindrops/${collection}`, bodyKeys: Object.keys({ ...extra, ids }), status: r.status, body: r.body };
+}
+
+const bulkProbeIds = new Set();
+
+/** Collection of each ID now, read one by one. */
+async function collectionsOf(ids) {
+  const out = {};
+  for (const id of ids) {
+    const g = await api("GET", `/raindrop/${id}`);
+    out[id] = g.ok ? (g.body.item?.collection?.$id ?? null) : `gone (${g.status})`;
+  }
+  return out;
+}
+
+const allIn = (where, coll) => Object.values(where).every((c) => c === coll);
+
+async function bulkSection() {
+  const b = (result.bulk = { docs: {}, steps: {} });
+  b.docs = {
+    source: "https://developer.raindrop.io/v1/raindrops/multiple",
+    removeMany: "DELETE /raindrops/{collectionId}, body ids; collectionId -99 removes permanently",
+    updateMany: "PUT /raindrops/{collectionId}, body ids and collection.$id moves",
+    collectionZero: "update or remove methods not support 0 yet",
+    createManyLimit: 100,
+    updateRemoveLimit: "none stated",
+    deleteZeroTested: false,
+    deleteZeroReason: "docs say 0 is unsupported for remove; a call there has no proven ids scope, so the probe does not send it",
+  };
+  const ids = [];
+  try {
+    for (const p of CLEANUP_PROBES) {
+      const r = await api("POST", "/raindrop", { body: { title: p.title, link: p.link, collection: { $id: UNSORTED } } });
+      if (!r.ok || !r.body.item?._id) throw new Error(`POST /raindrop for ${p.title} failed with ${r.status}`);
+      ids.push(r.body.item._id);
+      bulkProbeIds.add(r.body.item._id);
+    }
+    b.ids = ids;
+    b.steps.created = await collectionsOf(ids);
+    log(`created cleanup probes ${ids.join(", ")}`);
+
+    // Snapshot Unsorted so a wrong-scope call can be found and reversed by hand.
+    const before = await pageAll(UNSORTED);
+    const unsortedBefore = before.items.map((it) => it._id);
+    b.unsortedCountBefore = before.items.length;
+
+    // 1. Bulk trash, scoped to Unsorted, where both probes are.
+    const trash = await bulkCall("DELETE", UNSORTED, ids);
+    b.steps.bulkTrash = { ...trash, after: await collectionsOf(ids) };
+    const afterTrash = await pageAll(UNSORTED);
+    const lost = unsortedBefore.filter((id) => !bulkProbeIds.has(id) && !afterTrash.items.some((it) => it._id === id));
+    b.unsortedCountAfterTrash = afterTrash.items.length;
+    b.otherUnsortedMoved = lost.length;
+    if (lost.length > 0) {
+      b.otherUnsortedMovedIds = lost;
+      throw new Error(`bulk trash moved ${lost.length} other Unsorted bookmarks; see bulk.otherUnsortedMovedIds`);
+    }
+    if (trash.body.modified !== ids.length) throw new Error(`bulk trash modified ${trash.body.modified}, expected ${ids.length}`);
+
+    // 2. Restore with the wrong source collection: Unsorted scope, probes are in Trash.
+    const wrong = await bulkCall("PUT", UNSORTED, ids, { collection: { $id: UNSORTED } });
+    b.steps.restoreWrongSource = { ...wrong, after: await collectionsOf(ids) };
+
+    // 3. Restore with source -99 (Trash) to Unsorted.
+    const restore = await bulkCall("PUT", TRASH, ids, { collection: { $id: UNSORTED } });
+    b.steps.restoreFromTrash = { ...restore, after: await collectionsOf(ids) };
+    b.restoreWorked = allIn(b.steps.restoreFromTrash.after, UNSORTED);
+
+    // 4. Bulk trash once more, to confirm the reply shape repeats. Cleanup then needs one delete each.
+    const again = await bulkCall("DELETE", UNSORTED, ids);
+    b.steps.bulkTrashAgain = { ...again, after: await collectionsOf(ids) };
+    b.trashWorked = allIn(b.steps.bulkTrash.after, TRASH) && allIn(b.steps.bulkTrashAgain.after, TRASH);
+  } catch (e) {
+    result.errors.push({ step: "bulk", error: errText(e) });
+    log(`bulk failed: ${errText(e)}`);
+  } finally {
+    await bulkCleanup(ids);
+  }
+}
+
+/** Delete each cleanup probe for good, one by one, then prove that neither library nor Trash holds one. */
+async function bulkCleanup(ids) {
+  const c = { ids, deletes: {} };
+  try {
+    for (const id of ids) {
+      const g = await api("GET", `/raindrop/${id}`);
+      if (!g.ok) {
+        c.deletes[id] = "already gone";
+        continue;
+      }
+      c.deletes[id] = await deleteForGood(id, g.body.item?.collection?.$id === TRASH);
+    }
+    c.getAfter = {};
+    for (const id of ids) c.getAfter[id] = (await api("GET", `/raindrop/${id}`)).status;
+    const left = await findLeftovers();
+    const lib = await pageAll(UNSORTED);
+    const trash = await pageAll(TRASH);
+    c.searchLeftovers = left.length;
+    c.unsortedFullPassHasProbe = lib.items.some(isCleanupProbe);
+    c.trashFullPassHasProbe = trash.items.some(isCleanupProbe);
+    c.trashPagesChecked = trash.pages;
+    c.gone =
+      Object.values(c.getAfter).every((s) => s === 404) &&
+      left.length === 0 &&
+      !c.unsortedFullPassHasProbe &&
+      !c.trashFullPassHasProbe;
+  } catch (e) {
+    c.error = errText(e);
+    result.errors.push({ step: "bulkCleanup", error: errText(e) });
+  }
+  result.bulk.cleanup = c;
+}
+
 async function step(name, fn) {
   try {
     await fn();
@@ -327,6 +469,11 @@ async function main() {
   const t0 = Date.now();
   await checkToken();
   await removeLeftovers();
+  if (ONLY === "cleanup") {
+    await bulkSection();
+    result.totals = { calls, rateLimitWaits, elapsedSeconds: +((Date.now() - t0) / 1000).toFixed(1) };
+    return;
+  }
   let id;
   try {
     id = await createProbe();
@@ -342,6 +489,7 @@ async function main() {
     if (id !== undefined) await cleanup(id);
   }
   await step("pagePass", pagePass);
+  await bulkSection();
   result.totals = { calls, rateLimitWaits, elapsedSeconds: +((Date.now() - t0) / 1000).toFixed(1) };
 }
 
